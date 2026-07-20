@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-import fastfields_torch as fft
+import fastfields.torch as fft
 
 torch.manual_seed(0)
 
@@ -48,6 +48,28 @@ def test_sym_matvec_forward(dtype, C):
     ref = (dense_from_packed(mat, C) @ vec.unsqueeze(-1)).squeeze(-1)
     tol = 1e-5 if dtype == torch.float32 else 1e-10
     assert torch.allclose(out, ref, atol=tol, rtol=tol)
+
+
+def test_sym_matvec_broadcasts_batch_dims():
+    # mat batch (1,) vs vec batch (5,): wrapper broadcasts and matches the
+    # manually-broadcast dense product; broadcast operand is zero-copy (expand).
+    C = 3
+    mat = torch.randn(1, len(_PACK[C]), dtype=torch.float64)   # batch (1,)
+    vec = torch.randn(5, C, dtype=torch.float64)               # batch (5,)
+    out = fft.sym_matvec(mat, vec)
+    assert out.shape == (5, C)
+    dense = dense_from_packed(mat, C).expand(5, C, C)
+    ref = (dense @ vec.unsqueeze(-1)).squeeze(-1)
+    assert torch.allclose(out, ref, atol=1e-10)
+
+
+def test_gradcheck_sym_matvec_broadcast():
+    # Autograd must reduce the broadcast gradients back to the original
+    # (batch (1,)) matrix shape.
+    C = 2
+    mat = torch.randn(1, len(_PACK[C]), dtype=torch.float64, requires_grad=True)
+    vec = torch.randn(4, C, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(fft.sym_matvec, (mat, vec))
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])

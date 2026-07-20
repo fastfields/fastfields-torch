@@ -1,6 +1,6 @@
 """Spline coefficient prefilter (interpolating coefficients), with autograd.
 
-Wraps ``fastfields_bind.spline_coeff`` (in-place prefilter along the last axis).
+Wraps ``fastfields.dlpack.spline_coeff`` (in-place prefilter along the last axis).
 The prefilter is a linear, self-adjoint operator, so its backward applies the
 same prefilter to the gradient -- mirroring ``jitfields`` ``SplineCoeff_``.
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-import fastfields_bind as _fb
+import fastfields.dlpack as _fb
 
 from ._utils import as_contiguous, check_dtype
 

@@ -5,14 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fastfields-torch"
 version = "0.1.0"
-description = "User-friendly, autograd-enabled torch interface over the fastfields_bind bindings."
+description = "User-friendly, autograd-enabled torch interface over the fastfields.dlpack bindings."
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-    "fastfields-bind",
+    "fastfields-dlpack",
     "torch",
     "numpy",
 ]
 
+[project.optional-dependencies]
+test = ["pytest"]
+
+# Ships only the ``fastfields.torch`` subpackage; no ``fastfields/__init__.py``
+# is created, keeping ``fastfields`` a PEP 420 native namespace package.
 [tool.setuptools.packages.find]
-include = ["fastfields_torch*"]
+include = ["fastfields.torch*"]
+namespaces = true

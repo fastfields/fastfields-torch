@@ -1,6 +1,6 @@
 """Spline resampling (prolongation) and restriction (its adjoint), with autograd.
 
-Wraps ``fastfields_bind.resample`` and ``fastfields_bind.restriction``.
+Wraps ``fastfields.dlpack.resample`` and ``fastfields.dlpack.restriction``.
 
 Adjoint relationship (verified empirically against the bindings, and matching
 the spirit of ``jitfields`` ``resize.py`` where the backward of ``resize`` is
@@ -26,7 +26,7 @@ from typing import Optional, Sequence
 import torch
 from torch import Tensor
 
-import fastfields_bind as _fb
+import fastfields.dlpack as _fb
 
 from ._utils import as_contiguous, check_dtype
 

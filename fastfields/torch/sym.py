@@ -19,7 +19,7 @@ from typing import Optional
 import torch
 from torch import Tensor
 
-import fastfields_bind as _fb
+import fastfields.dlpack as _fb
 
 from ._utils import as_contiguous, check_dtype
 
@@ -29,7 +29,11 @@ __all__ = ["sym_matvec", "sym_solve", "sym_invert"]
 def sym_matvec(mat: Tensor, vec: Tensor) -> Tensor:
     """Matrix-vector product ``out = mat @ vec`` for compact-symmetric ``mat``.
 
-    Differentiable with respect to both ``mat`` and ``vec``.
+    Differentiable with respect to both ``mat`` and ``vec``. The batch (leading)
+    dims of ``mat`` and ``vec`` are broadcast together; the broadcast uses
+    ``Tensor.expand`` (0-stride views, no copy) which the stride-aware binding
+    consumes directly, and autograd reduces the broadcast gradients back to the
+    original operand shapes.
 
     Parameters
     ----------
@@ -41,9 +45,12 @@ def sym_matvec(mat: Tensor, vec: Tensor) -> Tensor:
     Returns
     -------
     out : `(..., C) tensor`
-        Matrix-vector product.
+        Matrix-vector product (broadcast batch shape + ``(C,)``).
     """
     check_dtype(mat, vec)
+    batch = torch.broadcast_shapes(mat.shape[:-1], vec.shape[:-1])
+    mat = mat.expand(*batch, mat.shape[-1])
+    vec = vec.expand(*batch, vec.shape[-1])
     return _MatVec.apply(mat, vec)
 
 
@@ -71,6 +78,14 @@ def sym_solve(mat: Tensor, vec: Tensor, weight: Optional[Tensor] = None) -> Tens
     check_dtype(mat, vec)
     if weight is not None:
         check_dtype(weight)
+    shapes = [mat.shape[:-1], vec.shape[:-1]]
+    if weight is not None:
+        shapes.append(weight.shape[:-1])
+    batch = torch.broadcast_shapes(*shapes)
+    mat = mat.expand(*batch, mat.shape[-1])
+    vec = vec.expand(*batch, vec.shape[-1])
+    if weight is not None:
+        weight = weight.expand(*batch, weight.shape[-1])
     return _Solve.apply(mat, vec, weight)
 
 
@@ -96,9 +111,10 @@ class _MatVec(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, mat, vec):
-        mat = as_contiguous(mat)
-        vec = as_contiguous(vec)
-        out = torch.empty_like(vec)
+        # mat/vec may be 0-stride broadcast views (from Tensor.expand); the
+        # stride-aware binding consumes them zero-copy, so we do NOT force
+        # contiguity. Only the output must be a real contiguous buffer.
+        out = vec.new_empty(vec.shape)
         _fb.sym_matvec(out, mat, vec)
         ctx.save_for_backward(mat, vec)
         return out
@@ -106,15 +122,16 @@ class _MatVec(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad):
         mat, vec = ctx.saved_tensors
-        grad = as_contiguous(grad)
         gmat = gvec = None
         # grad_vec = mat @ grad  (mat is symmetric, hence self-adjoint)
         if ctx.needs_input_grad[1]:
-            gvec = torch.empty_like(vec)
+            gvec = grad.new_empty(vec.shape)
             _fb.sym_matvec(gvec, mat, grad)
-        # grad_mat = outer-product contribution, via the dedicated backward op
+        # grad_mat = outer-product contribution, via the dedicated backward op.
+        # gmat carries mat's (possibly expanded) shape; autograd's expand
+        # backward then sums it down to the caller's original mat shape.
         if ctx.needs_input_grad[0]:
-            gmat = torch.empty_like(mat)
+            gmat = grad.new_empty(mat.shape)
             _fb.sym_matvec_backward(gmat, grad, vec)
         return gmat, gvec
 
@@ -134,15 +151,14 @@ class _Solve(torch.autograd.Function):
                 "sym_solve does not backpropagate gradients through the "
                 "matrix. Use `mat.detach()`."
             )
-        mat = as_contiguous(mat)
-        vec = as_contiguous(vec)
-        weight_c = None if weight is None else as_contiguous(weight)
-        out = torch.empty_like(vec)
-        if weight_c is None:
+        # mat/vec/weight may be 0-stride broadcast views (Tensor.expand); the
+        # stride-aware binding handles them zero-copy. Output is contiguous.
+        out = vec.new_empty(vec.shape)
+        if weight is None:
             _fb.sym_solve(out, mat, vec)
         else:
-            _fb.sym_solve(out, mat, vec, weight_c)
-        ctx.save_for_backward(mat, weight_c)
+            _fb.sym_solve(out, mat, vec, weight)
+        ctx.save_for_backward(mat, weight)
         return out
 
     @staticmethod
@@ -150,8 +166,7 @@ class _Solve(torch.autograd.Function):
         mat, weight = ctx.saved_tensors
         gvec = None
         if ctx.needs_input_grad[1]:
-            grad = as_contiguous(grad)
-            gvec = torch.empty_like(grad)
+            gvec = grad.new_empty(grad.shape)
             if weight is None:
                 _fb.sym_solve(gvec, mat, grad)
             else:

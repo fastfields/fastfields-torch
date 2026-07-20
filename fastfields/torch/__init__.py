@@ -1,5 +1,5 @@
-"""fastfields_torch: a user-friendly, autograd-enabled torch interface over the
-``fastfields_bind`` bindings.
+"""fastfields.torch: a user-friendly, autograd-enabled torch interface over the
+``fastfields.dlpack`` bindings.
 
 Public API
 ----------
@@ -21,7 +21,7 @@ Re-exported enums: :class:`Spline`, :class:`Bound`.
 
 from __future__ import annotations
 
-from fastfields_bind import Bound, Spline
+from fastfields.dlpack import Bound, Spline
 
 from .distance import dt_euclidean, dt_l1, dt_mesh
 from .resize import resample, restriction

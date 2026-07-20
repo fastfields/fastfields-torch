@@ -13,7 +13,7 @@ from typing import Optional, Tuple, Union
 import torch
 from torch import Tensor
 
-import fastfields_bind as _fb
+import fastfields.dlpack as _fb
 
 from ._utils import as_contiguous, check_dtype
 
@@ -64,12 +64,17 @@ def dt_mesh(
 
     Parameters
     ----------
-    loc : `(..., D) tensor`
+    loc : `(*B, D) tensor`
         Query points.
-    vertices : `(V, D) tensor`
+    vertices : `(*B, V, D) tensor`
         Mesh vertices (same float dtype as ``loc``).
-    faces : `(F, D) int tensor`
+    faces : `(*B, F, D) int tensor`
         Triangle vertex indices.
+
+    The batch (leading) dims of ``loc`` (core ``(D,)``), ``vertices`` (core
+    ``(V, D)``) and ``faces`` (core ``(F, D)``) are broadcast together via
+    ``Tensor.broadcast_to`` (0-stride views, no copy); ``dist`` (and
+    ``nearest_vertex``) are allocated with the broadcast batch shape.
     signed : `bool`, default=True
         Return signed distances.
     naive : `bool`, default=False
@@ -86,13 +91,18 @@ def dt_mesh(
     """
     check_dtype(loc, vertices)
     _reject_grad("dt_mesh", loc, vertices)
-    loc = as_contiguous(loc)
-    vertices = as_contiguous(vertices)
-    faces = as_contiguous(faces)
-    dist = loc.new_empty(loc.shape[:-1])
+    batch = torch.broadcast_shapes(
+        loc.shape[:-1], vertices.shape[:-2], faces.shape[:-2]
+    )
+    # 0-stride broadcast views (zero-copy); the stride-aware binding reads them
+    # directly. Outputs are contiguous real buffers.
+    loc = loc.broadcast_to((*batch, loc.shape[-1]))
+    vertices = vertices.broadcast_to((*batch, *vertices.shape[-2:]))
+    faces = faces.broadcast_to((*batch, *faces.shape[-2:]))
+    dist = loc.new_empty(batch)
     nearest = None
     if return_nearest:
-        nearest = torch.empty(loc.shape[:-1], dtype=torch.int64, device=loc.device)
+        nearest = torch.empty(batch, dtype=torch.int64, device=loc.device)
     _fb.dt_mesh(dist, nearest, loc, vertices, faces, signed, naive)
     if return_nearest:
         return dist, nearest
