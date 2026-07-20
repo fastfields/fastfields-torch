@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fastfields-torch"
+version = "0.1.0"
+description = "User-friendly, autograd-enabled torch interface over the fastfields_bind bindings."
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "fastfields-bind",
+    "torch",
+    "numpy",
+]
+
+[tool.setuptools.packages.find]
+include = ["fastfields_torch*"]
