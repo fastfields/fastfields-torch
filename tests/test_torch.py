@@ -39,6 +39,7 @@ def random_spd(batch, C, dtype=torch.float64):
 # Forward correctness
 # --------------------------------------------------------------------------- #
 
+
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("C", [2, 3])
 def test_sym_matvec_forward(dtype, C):
@@ -52,10 +53,10 @@ def test_sym_matvec_forward(dtype, C):
 
 def test_sym_matvec_broadcasts_batch_dims():
     # mat batch (1,) vs vec batch (5,): wrapper broadcasts and matches the
-    # manually-broadcast dense product; broadcast operand is zero-copy (expand).
+    # manually-broadcast dense product; broadcast operand is zero-copy.
     C = 3
-    mat = torch.randn(1, len(_PACK[C]), dtype=torch.float64)   # batch (1,)
-    vec = torch.randn(5, C, dtype=torch.float64)               # batch (5,)
+    mat = torch.randn(1, len(_PACK[C]), dtype=torch.float64)  # batch (1,)
+    vec = torch.randn(5, C, dtype=torch.float64)  # batch (5,)
     out = fft.sym_matvec(mat, vec)
     assert out.shape == (5, C)
     dense = dense_from_packed(mat, C).expand(5, C, C)
@@ -67,7 +68,9 @@ def test_gradcheck_sym_matvec_broadcast():
     # Autograd must reduce the broadcast gradients back to the original
     # (batch (1,)) matrix shape.
     C = 2
-    mat = torch.randn(1, len(_PACK[C]), dtype=torch.float64, requires_grad=True)
+    mat = torch.randn(
+        1, len(_PACK[C]), dtype=torch.float64, requires_grad=True
+    )
     vec = torch.randn(4, C, dtype=torch.float64, requires_grad=True)
     assert torch.autograd.gradcheck(fft.sym_matvec, (mat, vec))
 
@@ -114,9 +117,12 @@ def test_resample_restriction_adjoint():
 # Autograd (gradcheck) — the key deliverable
 # --------------------------------------------------------------------------- #
 
+
 @pytest.mark.parametrize("C", [2, 3])
 def test_gradcheck_sym_matvec(C):
-    mat = torch.randn(3, len(_PACK[C]), dtype=torch.float64, requires_grad=True)
+    mat = torch.randn(
+        3, len(_PACK[C]), dtype=torch.float64, requires_grad=True
+    )
     vec = torch.randn(3, C, dtype=torch.float64, requires_grad=True)
     assert torch.autograd.gradcheck(fft.sym_matvec, (mat, vec))
 
@@ -135,19 +141,22 @@ def test_gradcheck_sym_solve_weighted():
     weight = torch.rand(2, C, dtype=torch.float64) + 0.5
     vec = torch.randn(2, C, dtype=torch.float64, requires_grad=True)
     assert torch.autograd.gradcheck(
-        lambda v: fft.sym_solve(mat, v, weight), (vec,))
+        lambda v: fft.sym_solve(mat, v, weight), (vec,)
+    )
 
 
 def test_gradcheck_resample():
     x = torch.randn(2, 5, dtype=torch.float64, requires_grad=True)
     assert torch.autograd.gradcheck(
-        lambda t: fft.resample(t, 10, spline=2, bound=3), (x,))
+        lambda t: fft.resample(t, 10, spline=2, bound=3), (x,)
+    )
 
 
 def test_gradcheck_restriction():
     x = torch.randn(2, 10, dtype=torch.float64, requires_grad=True)
     assert torch.autograd.gradcheck(
-        lambda t: fft.restriction(t, 5, spline=2, bound=3), (x,))
+        lambda t: fft.restriction(t, 5, spline=2, bound=3), (x,)
+    )
 
 
 def test_gradcheck_spline_coeff():
@@ -159,29 +168,35 @@ def test_gradcheck_spline_coeff():
 # Distance transforms (non-differentiable)
 # --------------------------------------------------------------------------- #
 
+
 def test_dt_euclidean_values():
     x = torch.tensor([[0.0, 1e30, 1e30, 1e30, 0.0]], dtype=torch.float64)
     d = fft.dt_euclidean(x)
-    assert torch.allclose(d, torch.tensor([[0.0, 1.0, 4.0, 1.0, 0.0]],
-                                           dtype=torch.float64))
+    assert torch.allclose(
+        d, torch.tensor([[0.0, 1.0, 4.0, 1.0, 0.0]], dtype=torch.float64)
+    )
 
 
 def test_dt_l1_values():
     x = torch.tensor([[0.0, 1e30, 1e30, 0.0]], dtype=torch.float64)
     d = fft.dt_l1(x)
-    assert torch.allclose(d, torch.tensor([[0.0, 1.0, 1.0, 0.0]],
-                                           dtype=torch.float64))
+    assert torch.allclose(
+        d, torch.tensor([[0.0, 1.0, 1.0, 0.0]], dtype=torch.float64)
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Non-differentiable ops must refuse grad
 # --------------------------------------------------------------------------- #
 
+
 def test_nondiff_ops_reject_grad():
     with pytest.raises(ValueError):
         fft.sym_invert(torch.zeros(3, dtype=torch.float64, requires_grad=True))
     with pytest.raises(ValueError):
-        fft.dt_euclidean(torch.zeros(4, dtype=torch.float64, requires_grad=True))
+        fft.dt_euclidean(
+            torch.zeros(4, dtype=torch.float64, requires_grad=True)
+        )
     # sym_solve must not backprop through the matrix.
     mat = torch.randn(3, dtype=torch.float64, requires_grad=True)
     vec = torch.randn(2, dtype=torch.float64)

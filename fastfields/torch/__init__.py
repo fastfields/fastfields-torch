@@ -1,4 +1,6 @@
-"""fastfields.torch: a user-friendly, autograd-enabled torch interface over the
+"""fastfields.torch: an autograd-enabled torch interface over the bindings.
+
+A user-friendly, autograd-enabled torch interface over the
 ``fastfields.dlpack`` bindings.
 
 Public API
@@ -17,16 +19,20 @@ Non-differentiable (raise if an input requires grad):
 - :func:`dt_euclidean`, :func:`dt_l1`, :func:`dt_mesh`
 
 Re-exported enums: :class:`Spline`, :class:`Bound`.
+
+The implementation is split by category into :mod:`._util` (shared helpers
+and CUDA-stream resolution), :mod:`._dt` (distance transforms), :mod:`._sym`
+(compact-symmetric linear algebra) and :mod:`._resample` (spline coefficients
+and resampling/restriction).
 """
 
 from __future__ import annotations
 
 from fastfields.dlpack import Bound, Spline
 
-from .distance import dt_euclidean, dt_l1, dt_mesh
-from .resize import resample, restriction
-from .splinc import spline_coeff
-from .sym import sym_invert, sym_matvec, sym_solve
+from ._dt import dt_euclidean, dt_l1, dt_mesh
+from ._resample import resample, restriction, spline_coeff
+from ._sym import sym_invert, sym_matvec, sym_solve
 
 __all__ = [
     "sym_matvec",

@@ -16,12 +16,12 @@ from __future__ import annotations
 
 from typing import Optional
 
+import fastfields.dlpack as _fb
+
 import torch
 from torch import Tensor
 
-import fastfields.dlpack as _fb
-
-from ._utils import as_contiguous, check_dtype
+from ._util import check_dtype, stream_ptr
 
 __all__ = ["sym_matvec", "sym_solve", "sym_invert"]
 
@@ -29,8 +29,9 @@ __all__ = ["sym_matvec", "sym_solve", "sym_invert"]
 def sym_matvec(mat: Tensor, vec: Tensor) -> Tensor:
     """Matrix-vector product ``out = mat @ vec`` for compact-symmetric ``mat``.
 
-    Differentiable with respect to both ``mat`` and ``vec``. The batch (leading)
-    dims of ``mat`` and ``vec`` are broadcast together; the broadcast uses
+    Differentiable with respect to both ``mat`` and ``vec``. The batch
+    (leading) dims of ``mat`` and ``vec`` are broadcast together; the broadcast
+    uses
     ``Tensor.expand`` (0-stride views, no copy) which the stride-aware binding
     consumes directly, and autograd reduces the broadcast gradients back to the
     original operand shapes.
@@ -54,7 +55,9 @@ def sym_matvec(mat: Tensor, vec: Tensor) -> Tensor:
     return _MatVec.apply(mat, vec)
 
 
-def sym_solve(mat: Tensor, vec: Tensor, weight: Optional[Tensor] = None) -> Tensor:
+def sym_solve(
+    mat: Tensor, vec: Tensor, weight: Optional[Tensor] = None
+) -> Tensor:
     """Solve the symmetric system ``out = (mat + diag(weight)) \\ vec``.
 
     Differentiable with respect to ``vec`` (and ``weight`` is treated as a
@@ -100,9 +103,11 @@ def sym_invert(mat: Tensor) -> Tensor:
             "sym_invert does not backpropagate gradients through the matrix. "
             "Use `mat.detach()`."
         )
-    mat = as_contiguous(mat)
-    out = torch.empty_like(mat)
-    _fb.sym_invert(out, mat)
+    # mat is a read-only input: the stride-aware binding reads it zero-copy, so
+    # we do NOT force contiguity. The output must be a real contiguous buffer
+    # (new_empty is contiguous even when mat is strided).
+    out = mat.new_empty(mat.shape)
+    _fb.sym_invert(out, mat, stream=stream_ptr(mat))
     return out
 
 
@@ -115,7 +120,7 @@ class _MatVec(torch.autograd.Function):
         # stride-aware binding consumes them zero-copy, so we do NOT force
         # contiguity. Only the output must be a real contiguous buffer.
         out = vec.new_empty(vec.shape)
-        _fb.sym_matvec(out, mat, vec)
+        _fb.sym_matvec(out, mat, vec, stream=stream_ptr(out))
         ctx.save_for_backward(mat, vec)
         return out
 
@@ -126,13 +131,13 @@ class _MatVec(torch.autograd.Function):
         # grad_vec = mat @ grad  (mat is symmetric, hence self-adjoint)
         if ctx.needs_input_grad[1]:
             gvec = grad.new_empty(vec.shape)
-            _fb.sym_matvec(gvec, mat, grad)
+            _fb.sym_matvec(gvec, mat, grad, stream=stream_ptr(gvec))
         # grad_mat = outer-product contribution, via the dedicated backward op.
         # gmat carries mat's (possibly expanded) shape; autograd's expand
         # backward then sums it down to the caller's original mat shape.
         if ctx.needs_input_grad[0]:
             gmat = grad.new_empty(mat.shape)
-            _fb.sym_matvec_backward(gmat, grad, vec)
+            _fb.sym_matvec_backward(gmat, grad, vec, stream=stream_ptr(gmat))
         return gmat, gvec
 
 
@@ -154,10 +159,11 @@ class _Solve(torch.autograd.Function):
         # mat/vec/weight may be 0-stride broadcast views (Tensor.expand); the
         # stride-aware binding handles them zero-copy. Output is contiguous.
         out = vec.new_empty(vec.shape)
+        s = stream_ptr(out)
         if weight is None:
-            _fb.sym_solve(out, mat, vec)
+            _fb.sym_solve(out, mat, vec, stream=s)
         else:
-            _fb.sym_solve(out, mat, vec, weight)
+            _fb.sym_solve(out, mat, vec, weight, stream=s)
         ctx.save_for_backward(mat, weight)
         return out
 
@@ -167,8 +173,9 @@ class _Solve(torch.autograd.Function):
         gvec = None
         if ctx.needs_input_grad[1]:
             gvec = grad.new_empty(grad.shape)
+            s = stream_ptr(gvec)
             if weight is None:
-                _fb.sym_solve(gvec, mat, grad)
+                _fb.sym_solve(gvec, mat, grad, stream=s)
             else:
-                _fb.sym_solve(gvec, mat, grad, weight)
+                _fb.sym_solve(gvec, mat, grad, weight, stream=s)
         return None, gvec, None
