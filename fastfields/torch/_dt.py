@@ -16,7 +16,7 @@ import fastfields.dlpack as _fb
 import torch
 from torch import Tensor
 
-from ._util import as_contiguous, check_dtype, stream_ptr
+from ._util import check_dtype, stream_ptr
 
 __all__ = ["dt_euclidean", "dt_l1", "dt_mesh"]
 
@@ -69,7 +69,7 @@ def dt_euclidean(inp: Tensor, voxel_spacing: float = 1.0) -> Tensor:
     """
     check_dtype(inp)
     _reject_grad("dt_euclidean", inp)
-    out = as_contiguous(inp).clone()
+    out = inp.clone()
     _fb.dt_euclidean(out, voxel_spacing, stream=stream_ptr(out))
     return out
 
@@ -99,7 +99,7 @@ def dt_l1(inp: Tensor, voxel_spacing: float = 1.0) -> Tensor:
     """
     check_dtype(inp)
     _reject_grad("dt_l1", inp)
-    out = as_contiguous(inp).clone()
+    out = inp.clone()
     _fb.dt_l1(out, voxel_spacing, stream=stream_ptr(out))
     return out
 

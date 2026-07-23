@@ -42,26 +42,6 @@ def check_dtype(*tensors: Tensor) -> None:
             )
 
 
-def as_contiguous(t: Tensor) -> Tensor:
-    """Return a contiguous version of ``t`` (a no-op if already contiguous).
-
-    Used to materialise the **output** buffers that the bindings write into;
-    read-only inputs are passed with their native strides (the stride-aware
-    C++/CUDA library consumes them zero-copy) and do not go through this.
-
-    Parameters
-    ----------
-    t : torch.Tensor
-        Tensor to make contiguous.
-
-    Returns
-    -------
-    torch.Tensor
-        ``t`` if already contiguous, otherwise a contiguous copy.
-    """
-    return t if t.is_contiguous() else t.contiguous()
-
-
 def stream_ptr(t: Tensor) -> int:
     """Return the CUDA stream handle to forward to the binding for ``t``.
 

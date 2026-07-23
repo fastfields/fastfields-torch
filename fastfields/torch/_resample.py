@@ -34,7 +34,7 @@ import fastfields.dlpack as _fb
 import torch
 from torch import Tensor
 
-from ._util import as_contiguous, check_dtype, stream_ptr
+from ._util import check_dtype, stream_ptr
 
 __all__ = ["resample", "restriction", "spline_coeff"]
 
@@ -300,7 +300,7 @@ class _SplineCoeff(torch.autograd.Function):
     def forward(ctx, inp, spline, bound):
         # Work on a contiguous copy: the binding filters in place, so this
         # clone is the (contiguous) output buffer.
-        out = as_contiguous(inp).clone()
+        out = inp.clone()
         _fb.spline_coeff(out, spline, bound, stream=stream_ptr(out))
         ctx.spline = spline
         ctx.bound = bound
@@ -310,7 +310,7 @@ class _SplineCoeff(torch.autograd.Function):
     def backward(ctx, grad):
         gout = None
         if ctx.needs_input_grad[0]:
-            gout = as_contiguous(grad).clone()
+            gout = grad.clone()
             _fb.spline_coeff(
                 gout, ctx.spline, ctx.bound, stream=stream_ptr(gout)
             )
