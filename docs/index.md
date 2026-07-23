@@ -1,23 +1,40 @@
 # fastfields-torch
 
-`fastfields-torch` is a user-friendly, **autograd-enabled** PyTorch interface over the `fastfields.dlpack` bindings. Functions take and return `torch` tensors (CPU float32/float64), allocate their own outputs, and route through the bindings' DLPack path.
+**fastfields-torch** brings the fastfields field operators to **PyTorch**, and
+the core operations are **fully differentiable** — drop them into a model and
+gradients flow straight through. Functions take and return `torch` tensors and
+allocate their own outputs.
 
-## Installation
+## Install
 
-```bash
-pip install fastfields-torch
+```sh
+pip install fastfields-torch \
+    --extra-index-url https://fastfields.github.io/whl/cpu/
 ```
 
-## Usage
+## Use it
 
 ```python
 import torch
-import fastfields.torch as fft
+import fastfields.torch as ff
 
 mat = torch.randn(5, 6, dtype=torch.float64, requires_grad=True)  # packed C=3
 vec = torch.randn(5, 3, dtype=torch.float64, requires_grad=True)
-out = fft.sym_matvec(mat, vec)     # differentiable: H @ vec
-out.sum().backward()
+
+out = ff.sym_matvec(mat, vec)     # H @ vec, differentiable
+out.sum().backward()              # gradients land on mat and vec
 ```
 
-See the [API reference](api/index.md) for the full list of operations.
+## What's inside
+
+| Operation | Functions |
+|---|---|
+| **Positive-definite linear algebra** | `sym_matvec`, `sym_solve` (differentiable); `sym_invert` over whole fields of small symmetric matrices |
+| **Resampling** | `resample` (spline up/down-sampling), `restriction` (its adjoint), `spline_coeff` (coefficient prefilter) — all differentiable |
+| **Distance transforms** | `dt_euclidean`, `dt_l1`, `dt_mesh` |
+
+`sym_matvec`, `sym_solve`, `resample`, `restriction` and `spline_coeff` support
+autograd; the distance transforms and `sym_invert` do not and will raise if an
+input requires grad.
+
+See the [API reference](api/index.md) for full signatures and options.
