@@ -2,3 +2,6 @@ __pycache__/
 *.egg-info/
 build/
 .pytest_cache/
+
+# versioningit-generated version file
+fastfields/torch/_version.py

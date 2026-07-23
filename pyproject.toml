@@ -1,10 +1,27 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "versioningit>=3"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "fastfields-torch"
-version = "0.1.0"
+dynamic = ["version"]
+authors = [{ name = "Yaël Balbastre", email = "yael.bx@gmail.com" }]
+maintainers = [{ name = "Yaël Balbastre", email = "yael.bx@gmail.com" }]
+keywords = ["fastfields", "medical-imaging", "interpolation", "distance-transform", "gpu", "dlpack"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
+]
 description = "User-friendly, autograd-enabled torch interface over the fastfields.dlpack bindings."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -37,3 +54,34 @@ ignore = [
     "B007",   # allow unused loop variables
     "E731",   # allow assigning lambdas to variables
 ]
+
+[project.urls]
+Homepage = "https://github.com/fastfields/fastfields-torch"
+Documentation = "https://fastfields.github.io/fastfields-torch/"
+Issues = "https://github.com/fastfields/fastfields-torch/issues"
+Repository = "https://github.com/fastfields/fastfields-torch"
+
+[tool.versioningit]
+default-version = "0+unknown"
+
+[tool.versioningit.vcs]
+default-tag = "0.1"
+
+[tool.versioningit.format]
+distance = "{base_version}+{distance}.{vcs}{rev}"
+dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
+distance-dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
+
+[tool.versioningit.write]
+file = "fastfields/torch/_version.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["fastfields.torch"]
+omit = ["*/_version.py"]
+
+[tool.codespell]
+check-filenames = true
+skip = ".git,*.egg-info,build,dist,*.pdf,*.svg,docs/examples"
