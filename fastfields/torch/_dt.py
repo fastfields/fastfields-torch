@@ -58,7 +58,7 @@ def dt_euclidean(inp: Tensor, voxel_spacing: float = 1.0) -> Tensor:
     Returns
     -------
     torch.Tensor
-        The distance transform (a new contiguous tensor).
+        The distance transform (a new tensor with ``inp``'s layout).
 
     Raises
     ------
@@ -88,7 +88,7 @@ def dt_l1(inp: Tensor, voxel_spacing: float = 1.0) -> Tensor:
     Returns
     -------
     torch.Tensor
-        The distance transform (a new contiguous tensor).
+        The distance transform (a new tensor with ``inp``'s layout).
 
     Raises
     ------

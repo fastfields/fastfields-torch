@@ -298,8 +298,9 @@ class _Restriction(torch.autograd.Function):
 class _SplineCoeff(torch.autograd.Function):
     @staticmethod
     def forward(ctx, inp, spline, bound):
-        # Work on a contiguous copy: the binding filters in place, so this
-        # clone is the (contiguous) output buffer.
+        # Layout-preserving copy: the binding filters in place through the
+        # tensor's strides, so this clone is the output buffer (its layout
+        # matches inp -- the stride-aware binding needs no contiguous copy).
         out = inp.clone()
         _fb.spline_coeff(out, spline, bound, stream=stream_ptr(out))
         ctx.spline = spline
