@@ -202,3 +202,62 @@ def test_nondiff_ops_reject_grad():
     vec = torch.randn(2, dtype=torch.float64)
     with pytest.raises(ValueError):
         fft.sym_solve(mat, vec)
+
+
+# --------------------------------------------------------------------------- #
+# Cross-backend validation parity (fastfields-lib#17)
+# --------------------------------------------------------------------------- #
+
+
+def test_sym_matvec_channel_mismatch_raises():
+    # C4: mat encodes C=2 (packed len 3) but vec has 3 channels -> the wrapper
+    # must raise, not let a mismatched pair reach the raw binding (segfault).
+    mat = torch.zeros(3, dtype=torch.float64)  # encodes C=2
+    vec = torch.zeros(3, dtype=torch.float64)  # C=3
+    with pytest.raises(ValueError):
+        fft.sym_matvec(mat, vec)
+
+
+def test_sym_solve_channel_mismatch_raises():
+    mat = torch.zeros(3, dtype=torch.float64)  # encodes C=2
+    vec = torch.zeros(3, dtype=torch.float64)  # C=3
+    with pytest.raises(ValueError):
+        fft.sym_solve(mat, vec)
+
+
+def test_sym_matvec_non_triangular_packed_raises():
+    # A packed length that is not a triangular number cannot encode any C.
+    mat = torch.zeros(4, dtype=torch.float64)
+    vec = torch.zeros(2, dtype=torch.float64)
+    with pytest.raises(ValueError):
+        fft.sym_matvec(mat, vec)
+
+
+def test_sym_solve_weight_channel_mismatch_raises():
+    mat = torch.zeros(3, dtype=torch.float64)  # encodes C=2
+    vec = torch.zeros(2, dtype=torch.float64)  # C=2 (ok)
+    weight = torch.zeros(3, dtype=torch.float64)  # C=3 -> mismatch
+    with pytest.raises(ValueError):
+        fft.sym_solve(mat, vec, weight)
+
+
+def test_dt_mesh_normalizes_faces_to_int64(monkeypatch):
+    # C5: an int32 (or any non-int64) faces array must be cast to int64 before
+    # the binding, which reads indices at int64 width. We intercept the binding
+    # to capture the dtype that actually reaches it (the mesh shape contract is
+    # finicky, so we do not run the real kernel here).
+    import fastfields.torch._dt as dtmod
+
+    seen = {}
+
+    def spy(dist, nearest, loc, vertices, faces, signed, naive, stream=0):
+        seen["faces_dtype"] = faces.dtype
+
+    monkeypatch.setattr(dtmod._fb, "dt_mesh", spy)
+
+    loc = torch.zeros(1, 3, dtype=torch.float32)
+    verts = torch.zeros(1, 3, 3, dtype=torch.float32)
+    for face_dtype in (torch.int32, torch.int16, torch.int64):
+        faces = torch.tensor([[[0, 1, 2]]], dtype=face_dtype)
+        fft.dt_mesh(loc, verts, faces, signed=False, naive=True)
+        assert seen["faces_dtype"] == torch.int64
