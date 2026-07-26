@@ -18,9 +18,11 @@ applies the same prefilter to the gradient.
 Notes
 -----
 * ``scale`` uses the binding convention "input-index per output-index".
-* The binding segfaults when ``scale=None`` is passed, so this wrapper always
-  computes an explicit scale from the shapes when the caller does not provide
-  one (``scale[d] = inshape[d] / outshape[d]``).
+* This wrapper always passes the binding an explicit per-dim ``scale`` --
+  derived from ``anchor`` and the shapes, or from an explicit ``scale``
+  override (see :func:`resample`). (The binding itself now handles
+  ``scale=None`` by defaulting to ``inshape / outshape``; the wrapper resolves
+  the scale up front so the ``anchor`` conventions are applied consistently.)
 * On CUDA tensors the current stream is forwarded to the binding (see
   :mod:`fastfields.torch._util`).
 """
@@ -30,6 +32,14 @@ from __future__ import annotations
 from typing import Optional, Sequence
 
 import fastfields.dlpack as _fb
+from fastfields.dlpack import (
+    anchor_scale_shift,
+    as_bound,
+    as_spline,
+    check_ndim,
+    infer_ndim,
+    resolve_out_spatial,
+)
 
 import torch
 from torch import Tensor
@@ -37,34 +47,6 @@ from torch import Tensor
 from ._util import check_dtype, stream_ptr
 
 __all__ = ["resample", "restriction", "spline_coeff"]
-
-
-def _normalize_shape(shape: int | Sequence[int], ndim: int) -> list[int]:
-    """Normalise a shape argument to a list of length ``ndim``.
-
-    Parameters
-    ----------
-    shape : int or sequence of int
-        Output spatial shape (an ``int`` is repeated ``ndim`` times).
-    ndim : int
-        Expected number of spatial dimensions.
-
-    Returns
-    -------
-    list of int
-        The normalised shape.
-
-    Raises
-    ------
-    ValueError
-        If ``shape`` does not have length ``ndim``.
-    """
-    if isinstance(shape, int):
-        shape = [shape] * ndim
-    shape = list(shape)
-    if len(shape) != ndim:
-        raise ValueError(f"Expected shape of length ndim={ndim}, got {shape}.")
-    return shape
 
 
 def _effective_scale(
@@ -103,149 +85,105 @@ def _effective_scale(
     return [float(s) for s in scale]
 
 
-# torch-interpol anchor conventions (see ``interpol.resize``). Each anchor is
-# identified by its first (lower-cased) letter, so both the full name
-# ("centers") and the abbreviation ("c") are accepted.
-_ANCHORS = ("c", "e", "f", "l")
-_ANCHOR_SHIFT = {"e": 0.5, "f": 0.0, "l": 1.0}
-
-
-def _anchor_scale_shift(
-    anchor: str,
-    inshape: Sequence[int],
-    outshape: Sequence[int],
-    ndim: int,
-) -> tuple[list[float], float]:
-    """Map a torch-interpol ``anchor`` to a per-dim scale and scalar shift.
-
-    The fastfields resize kernel samples input coordinate
-    ``scale[d] * loc + shift * (scale[d] - 1)`` for output index ``loc``. The
-    four anchors of ``interpol.resize`` map onto ``(scale, shift)`` as:
-
-    ==========  =================  =======
-    anchor      scale[d]           shift
-    ==========  =================  =======
-    ``centers`` ``(in-1)/(out-1)`` ``0.0``
-    ``edges``   ``in/out``         ``0.5``
-    ``first``   ``in/out``         ``0.0``
-    ``last``    ``in/out``         ``1.0``
-    ==========  =================  =======
-
-    Parameters
-    ----------
-    anchor : str
-        Anchor name or abbreviation (``centers``/``edges``/``first``/``last``
-        or ``c``/``e``/``f``/``l``); matched case-insensitively on the first
-        letter, mirroring ``interpol.resize``.
-    inshape, outshape : sequence of int
-        Input and output spatial sizes.
-    ndim : int
-        Number of spatial dimensions.
-
-    Returns
-    -------
-    scale : list of float
-        Per-dim input-index step per output-index step.
-    shift : float
-        Scalar sampling shift shared across dimensions.
-
-    Raises
-    ------
-    ValueError
-        If ``anchor`` is empty or its first letter is not one of ``c/e/f/l``.
-    """
-    key = str(anchor)[:1].lower()
-    if key not in _ANCHORS:
-        raise ValueError(
-            f"anchor must be one of centers/edges/first/last, got {anchor!r}"
-        )
-    if key == "c":
-        scale = [
-            ((inshape[d] - 1) / (outshape[d] - 1))
-            if (inshape[d] > 1 and outshape[d] > 1)
-            else 1.0
-            for d in range(ndim)
-        ]
-        return scale, 0.0
-    scale = [float(inshape[d]) / float(outshape[d]) for d in range(ndim)]
-    return scale, _ANCHOR_SHIFT[key]
-
-
 def resample(
     inp: Tensor,
-    shape: int | Sequence[int],
-    spline: int = 2,
-    bound: int = 3,
+    factor: float | Sequence[float] | None = None,
+    shape: int | Sequence[int] | None = None,
+    *,
+    order: int | str = 2,
+    bound: int | str = "dct2",
+    ndim: Optional[int] = None,
+    anchor: str = "centers",
     shift: Optional[float] = None,
     scale: Optional[Sequence[float]] = None,
-    ndim: int = 1,
-    anchor: str = "centers",
 ) -> Tensor:
     """Spline resample (prolongation) of the last ``ndim`` axes.
 
-    Differentiable with respect to ``inp`` (backward is ``restriction``).
+    Differentiable with respect to ``inp`` (backward is ``restriction``). The
+    signature matches the numpy/cupy wrappers so ``fastfields.any.resample``
+    dispatches consistently.
 
     Parameters
     ----------
     inp : torch.Tensor
         Input tensor, shape ``(..., *inshape)``.
-    shape : int or sequence of int
-        Output spatial shape (the last ``ndim`` axes of the result).
-    spline : int, default=2
-        Spline order.
-    bound : int, default=3
-        Boundary condition (default DCT2).
-    shift : float, optional
-        Sampling-shift override. When omitted the shift implied by ``anchor``
-        is used; pass a value to override it (advanced use).
-    scale : sequence of float, optional
-        Per-dim scale (input-index per output-index), length ``ndim``. When
-        omitted it is derived from ``anchor`` and the shapes; pass a value to
-        override it (advanced use).
-    ndim : int, default=1
-        Number of spatial dimensions.
+    factor : float or sequence of float, optional
+        Per-axis resize multiplier (scalar or sequence). Mutually exclusive
+        with ``shape``; with neither, this is the identity.
+    shape : int or sequence of int, optional
+        Explicit output spatial size (the last ``ndim`` axes of the result).
+    order : int or str, default=2
+        Spline order (int ``0..7``, a :class:`Spline` enum, or a name such as
+        ``"cubic"``).
+    bound : int or str, default="dct2"
+        Boundary condition (int, a :class:`Bound` enum, or a name such as
+        ``"dct2"``/``"wrap"``).
+    ndim : int, optional
+        Number of trailing spatial dimensions (inferred from ``shape``/
+        ``factor`` when omitted, else 1).
     anchor : {"centers", "edges", "first", "last"}, default="centers"
         Sampling-grid convention, matching ``interpol.resize``. Sets the
         default per-dim ``scale`` and ``shift`` (see
-        :func:`_anchor_scale_shift` for the mapping). Abbreviations
-        (``"c"``/``"e"``/``"f"``/``"l"``) are accepted.
-
-        .. note::
-           The default is ``"centers"``. Earlier releases behaved like
-           ``"first"`` (scale ``in/out``, shift ``0``); pass ``anchor="first"``
-           to recover that grid.
+        :func:`fastfields.dlpack.anchor_scale_shift`). Abbreviations
+        (``"c"``/``"e"``/``"f"``/
+        ``"l"``) are accepted.
+    shift : float, optional
+        Sampling-shift override (default: the shift implied by ``anchor``).
+    scale : sequence of float, optional
+        Per-dim scale override (default: derived from ``anchor`` and the
+        shapes), length ``ndim``.
 
     Returns
     -------
     torch.Tensor
-        Resampled tensor, shape ``(..., *shape)``.
+        Resampled tensor, shape ``(..., *outshape)``.
+
+    Raises
+    ------
+    ValueError
+        If ``ndim`` is outside ``1..inp.dim()``, ``anchor``/``order``/``bound``
+        is unknown, or ``factor``/``shape`` has the wrong length.
     """
     check_dtype(inp)
-    shape = _normalize_shape(shape, ndim)
-    a_scale, a_shift = _anchor_scale_shift(
-        anchor, inp.shape[-ndim:], shape, ndim
+    ndim = infer_ndim(ndim, factor, shape)
+    check_ndim(ndim, inp.dim())
+    spatial_in = tuple(inp.shape[-ndim:])
+    out_spatial = resolve_out_spatial(spatial_in, ndim, factor, shape)
+    a_scale, a_shift = anchor_scale_shift(
+        anchor, spatial_in, out_spatial, ndim
     )
     if scale is not None:
-        a_scale = _effective_scale(scale, inp.shape[-ndim:], shape, ndim)
+        a_scale = _effective_scale(scale, spatial_in, out_spatial, ndim)
     if shift is not None:
         a_shift = float(shift)
-    return _Resample.apply(inp, shape, spline, bound, a_shift, a_scale, ndim)
+    return _Resample.apply(
+        inp,
+        list(out_spatial),
+        as_spline(order),
+        as_bound(bound),
+        a_shift,
+        a_scale,
+        ndim,
+    )
 
 
 def restriction(
     inp: Tensor,
-    shape: int | Sequence[int],
-    spline: int = 2,
-    bound: int = 3,
+    factor: float | Sequence[float] | None = None,
+    shape: int | Sequence[int] | None = None,
+    *,
+    order: int | str = 2,
+    bound: int | str = "dct2",
+    ndim: Optional[int] = None,
+    anchor: str = "centers",
     shift: Optional[float] = None,
     scale: Optional[Sequence[float]] = None,
-    ndim: int = 1,
-    anchor: str = "centers",
 ) -> Tensor:
     """Restriction (adjoint of :func:`resample`) of the last ``ndim`` axes.
 
     The binding accumulates into a buffer, which this wrapper pre-zeroes.
-    Differentiable with respect to ``inp`` (backward is ``resample``).
+    Differentiable with respect to ``inp`` (backward is ``resample``). Shares
+    :func:`resample`'s ``factor``/``shape``/``order`` signature.
 
     The ``anchor`` convention matches :func:`resample`; because the scale is
     derived from this call's own (input, output) shapes, a ``resample`` and a
@@ -256,41 +194,60 @@ def restriction(
     ----------
     inp : torch.Tensor
         Input tensor, shape ``(..., *inshape)``.
-    shape : int or sequence of int
-        Output spatial shape (the last ``ndim`` axes of the result).
-    spline : int, default=2
-        Spline order.
-    bound : int, default=3
-        Boundary condition (default DCT2).
+    factor : float or sequence of float, optional
+        Per-axis resize multiplier (mutually exclusive with ``shape``).
+    shape : int or sequence of int, optional
+        Explicit output spatial size.
+    order : int or str, default=2
+        Spline order (see :func:`resample`).
+    bound : int or str, default="dct2"
+        Boundary condition (see :func:`resample`).
+    ndim : int, optional
+        Number of trailing spatial dimensions (inferred when omitted).
+    anchor : {"centers", "edges", "first", "last"}, default="centers"
+        Sampling-grid convention (see :func:`resample`).
     shift : float, optional
         Sampling-shift override (see :func:`resample`).
     scale : sequence of float, optional
         Per-dim scale override (see :func:`resample`).
-    ndim : int, default=1
-        Number of spatial dimensions.
-    anchor : {"centers", "edges", "first", "last"}, default="centers"
-        Sampling-grid convention (see :func:`resample`).
 
     Returns
     -------
     torch.Tensor
-        Restricted tensor, shape ``(..., *shape)``.
+        Restricted tensor, shape ``(..., *outshape)``.
+
+    Raises
+    ------
+    ValueError
+        If ``ndim`` is outside ``1..inp.dim()``, ``anchor``/``order``/``bound``
+        is unknown, or ``factor``/``shape`` has the wrong length.
     """
     check_dtype(inp)
-    shape = _normalize_shape(shape, ndim)
-    a_scale, a_shift = _anchor_scale_shift(
-        anchor, inp.shape[-ndim:], shape, ndim
+    ndim = infer_ndim(ndim, factor, shape)
+    check_ndim(ndim, inp.dim())
+    spatial_in = tuple(inp.shape[-ndim:])
+    out_spatial = resolve_out_spatial(spatial_in, ndim, factor, shape)
+    a_scale, a_shift = anchor_scale_shift(
+        anchor, spatial_in, out_spatial, ndim
     )
     if scale is not None:
-        a_scale = _effective_scale(scale, inp.shape[-ndim:], shape, ndim)
+        a_scale = _effective_scale(scale, spatial_in, out_spatial, ndim)
     if shift is not None:
         a_shift = float(shift)
     return _Restriction.apply(
-        inp, shape, spline, bound, a_shift, a_scale, ndim
+        inp,
+        list(out_spatial),
+        as_spline(order),
+        as_bound(bound),
+        a_shift,
+        a_scale,
+        ndim,
     )
 
 
-def spline_coeff(inp: Tensor, spline: int = 3, bound: int = 3) -> Tensor:
+def spline_coeff(
+    inp: Tensor, order: int | str = 3, bound: int | str = "dct2"
+) -> Tensor:
     """Compute interpolating spline coefficients along the last axis.
 
     Returns a new tensor (does not modify ``inp``), so it is safe for autograd.
@@ -300,10 +257,12 @@ def spline_coeff(inp: Tensor, spline: int = 3, bound: int = 3) -> Tensor:
     ----------
     inp : torch.Tensor
         Input samples, shape ``(..., N)``.
-    spline : int, default=3
-        Spline order (orders 0 and 1 are no-ops).
-    bound : int, default=3
-        Boundary condition (default DCT2).
+    order : int or str, default=3
+        Spline order (orders 0 and 1 are no-ops); accepts an int, a
+        :class:`Spline` enum, or a name such as ``"cubic"`` (unified with the
+        numpy/cupy wrappers).
+    bound : int or str, default="dct2"
+        Boundary condition (int, a :class:`Bound` enum, or a name).
 
     Returns
     -------
@@ -311,7 +270,7 @@ def spline_coeff(inp: Tensor, spline: int = 3, bound: int = 3) -> Tensor:
         Spline coefficients, shape ``(..., N)``.
     """
     check_dtype(inp)
-    return _SplineCoeff.apply(inp, spline, bound)
+    return _SplineCoeff.apply(inp, as_spline(order), as_bound(bound))
 
 
 def _do_resample(
