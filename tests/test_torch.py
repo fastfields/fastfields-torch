@@ -106,11 +106,78 @@ def test_resample_factor1_identity(dtype):
 
 def test_resample_restriction_adjoint():
     # <R x, y> == <x, R^T y>, with R = resample and R^T = restriction(1/scale).
+    # Pin anchor="first" (scale = in/out = 0.5) so the explicit reciprocal
+    # scale [2.0] below is the matching adjoint.
     x = torch.randn(3, 5, dtype=torch.float64)
     y = torch.randn(3, 10, dtype=torch.float64)
-    Rx = fft.resample(x, 10, spline=2)
+    Rx = fft.resample(x, 10, spline=2, anchor="first")
     Rty = fft.restriction(y, 5, spline=2, scale=[2.0])
     assert torch.allclose((Rx * y).sum(), (x * Rty).sum(), atol=1e-10)
+
+
+def test_resample_restriction_adjoint_by_anchor():
+    # resample(a -> b) and restriction(b -> a) with the SAME anchor are exact
+    # adjoints: restriction derives the reciprocal scale from its own shapes.
+    for anchor in ("centers", "edges", "first", "last"):
+        x = torch.randn(3, 5, dtype=torch.float64)
+        y = torch.randn(3, 10, dtype=torch.float64)
+        Rx = fft.resample(x, 10, spline=2, anchor=anchor)
+        Rty = fft.restriction(y, 5, spline=2, anchor=anchor)
+        assert torch.allclose((Rx * y).sum(), (x * Rty).sum(), atol=1e-10), (
+            anchor
+        )
+
+
+# --------------------------------------------------------------------------- #
+# anchor conventions (match interpol.resize)
+# --------------------------------------------------------------------------- #
+
+
+def test_anchor_scale_shift_mapping():
+    from fastfields.torch._resample import _anchor_scale_shift
+
+    for name, abbr, exp_scale, exp_shift in [
+        ("centers", "c", 7 / 3, 0.0),
+        ("edges", "e", 2.0, 0.5),
+        ("first", "f", 2.0, 0.0),
+        ("last", "l", 2.0, 1.0),
+    ]:
+        scale, shift = _anchor_scale_shift(name, (8,), (4,), 1)
+        assert shift == exp_shift
+        assert scale == pytest.approx([exp_scale])
+        assert _anchor_scale_shift(abbr, (8,), (4,), 1) == (scale, shift)
+
+
+def test_anchor_unknown_raises():
+    with pytest.raises(ValueError, match="anchor"):
+        fft.resample(torch.arange(8, dtype=torch.float64), 4, anchor="nope")
+
+
+@pytest.mark.parametrize(
+    "anchor,expected",
+    [
+        ("centers", [0.0, 7 / 3, 14 / 3, 7.0]),
+        ("first", [0.0, 2.0, 4.0, 6.0]),
+        ("edges", [0.5, 2.5, 4.5, 6.5]),
+        ("last", [1.0, 3.0, 5.0, 7.0]),
+    ],
+)
+def test_resample_anchor_matches_grid(anchor, expected):
+    # linear interp of the ramp reproduces the sampled coordinate; all coords
+    # below stay inside [0, 7].
+    x = torch.arange(8, dtype=torch.float64)
+    out = fft.resample(x, 4, spline=1, bound=3, anchor=anchor)
+    assert out.shape == (4,)
+    assert torch.allclose(
+        out, torch.tensor(expected, dtype=torch.float64), atol=1e-10
+    )
+
+
+def test_resample_default_anchor_is_centers():
+    x = torch.arange(8, dtype=torch.float64)
+    default = fft.resample(x, 4, spline=1, bound=3)
+    centers = fft.resample(x, 4, spline=1, bound=3, anchor="centers")
+    assert torch.equal(default, centers)
 
 
 # --------------------------------------------------------------------------- #
