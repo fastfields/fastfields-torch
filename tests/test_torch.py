@@ -363,3 +363,95 @@ def test_dt_mesh_normalizes_faces_to_int64(monkeypatch):
         faces = torch.tensor([[[0, 1, 2]]], dtype=face_dtype)
         fft.dt_mesh(loc, verts, faces, signed=False, naive=True)
         assert seen["faces_dtype"] == torch.int64
+
+
+# --------------------------------------------------------------------------- #
+# pushpull (spline gather / scatter) + autograd                               #
+# --------------------------------------------------------------------------- #
+
+
+def test_pull_linear_interpolation():
+    inp = torch.tensor([[0.0], [10.0], [20.0], [30.0]], dtype=torch.float64)
+    grid = torch.tensor([[0.5], [1.5], [2.5]], dtype=torch.float64)
+    out = fft.pull(inp, grid, order=1)
+    assert torch.allclose(
+        out.squeeze(), torch.tensor([5.0, 15.0, 25.0], dtype=torch.float64)
+    )
+
+
+def test_count_identity_is_ones():
+    grid = torch.arange(5.0, dtype=torch.float64).reshape(5, 1)
+    assert torch.allclose(
+        fft.count(grid, shape=5, order=1).squeeze(),
+        torch.ones(5, dtype=torch.float64),
+    )
+
+
+def test_push_is_pull_adjoint():
+    grid = torch.linspace(0, 5, 4, dtype=torch.float64).reshape(4, 1)
+    x = torch.randn(6, 1, dtype=torch.float64)
+    y = torch.randn(4, 1, dtype=torch.float64)
+    px = fft.pull(x, grid, order=2)
+    py = fft.push(y, grid, shape=6, order=2)
+    assert torch.allclose((px * y).sum(), (x * py).sum(), atol=1e-8)
+
+
+def test_pull_gradcheck_wrt_input():
+    grid = torch.tensor([[0.5], [1.5], [2.5]], dtype=torch.float64)
+    inp = torch.randn(4, 1, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(
+        lambda x: fft.pull(x, grid, order=2), (inp,), eps=1e-6, atol=1e-4
+    )
+
+
+def test_push_gradcheck_wrt_input():
+    grid = torch.linspace(0, 5, 4, dtype=torch.float64).reshape(4, 1)
+    inp = torch.randn(4, 1, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(
+        lambda x: fft.push(x, grid, shape=6, order=2),
+        (inp,),
+        eps=1e-6,
+        atol=1e-4,
+    )
+
+
+def test_pull_grid_grad_not_supported():
+    grid = torch.zeros(3, 1, dtype=torch.float64, requires_grad=True)
+    inp = torch.randn(4, 1, dtype=torch.float64)
+    with pytest.raises(NotImplementedError):
+        fft.pull(inp, grid)
+
+
+# --------------------------------------------------------------------------- #
+# regularisers + autograd                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_field_matvec_absolute_and_gradcheck():
+    f = torch.randn(8, 2, dtype=torch.float64, requires_grad=True)
+    out = fft.field_matvec(f, absolute=[2.0, 3.0], ndim=1)
+    assert torch.allclose(out[:, 0], 2.0 * f.detach()[:, 0])
+    assert torch.allclose(out[:, 1], 3.0 * f.detach()[:, 1])
+    assert torch.autograd.gradcheck(
+        lambda z: fft.field_matvec(
+            z, absolute=[2.0, 3.0], membrane=[0.5, 0.5], ndim=1
+        ),
+        (f,),
+        eps=1e-6,
+        atol=1e-4,
+    )
+
+
+def test_flow_matvec_gradcheck():
+    v = torch.randn(8, 1, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(
+        lambda z: fft.flow_matvec(z, absolute=2.0, membrane=0.5, ndim=1),
+        (v,),
+        eps=1e-6,
+        atol=1e-4,
+    )
+
+
+def test_field_diag_absolute():
+    d = fft.field_diag((8, 2), absolute=2.0, ndim=1)
+    assert torch.allclose(d, torch.tensor(2.0, dtype=torch.float64))

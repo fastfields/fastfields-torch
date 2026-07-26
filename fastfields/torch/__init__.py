@@ -31,6 +31,8 @@ from __future__ import annotations
 from fastfields.dlpack import Bound, Spline
 
 from ._dt import dt_euclidean, dt_l1, dt_mesh
+from ._pushpull import count, grad, pull, push
+from ._reg import field_diag, field_matvec, flow_diag, flow_matvec
 from ._resample import resample, restriction, spline_coeff
 from ._sym import sym_invert, sym_matvec, sym_solve
 
@@ -44,6 +46,14 @@ __all__ = [
     "dt_euclidean",
     "dt_l1",
     "dt_mesh",
+    "pull",
+    "push",
+    "count",
+    "grad",
+    "field_matvec",
+    "field_diag",
+    "flow_matvec",
+    "flow_diag",
     "Spline",
     "Bound",
 ]
