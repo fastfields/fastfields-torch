@@ -401,7 +401,9 @@ def restriction(
     )
 
 
-def spline_coeff(inp: Tensor, spline: int = 3, bound: int = 3) -> Tensor:
+def spline_coeff(
+    inp: Tensor, order: int | str = 3, bound: int | str = "dct2"
+) -> Tensor:
     """Compute interpolating spline coefficients along the last axis.
 
     Returns a new tensor (does not modify ``inp``), so it is safe for autograd.
@@ -411,10 +413,12 @@ def spline_coeff(inp: Tensor, spline: int = 3, bound: int = 3) -> Tensor:
     ----------
     inp : torch.Tensor
         Input samples, shape ``(..., N)``.
-    spline : int, default=3
-        Spline order (orders 0 and 1 are no-ops).
-    bound : int, default=3
-        Boundary condition (default DCT2).
+    order : int or str, default=3
+        Spline order (orders 0 and 1 are no-ops); accepts an int, a
+        :class:`Spline` enum, or a name such as ``"cubic"`` (unified with the
+        numpy/cupy wrappers).
+    bound : int or str, default="dct2"
+        Boundary condition (int, a :class:`Bound` enum, or a name).
 
     Returns
     -------
@@ -422,7 +426,7 @@ def spline_coeff(inp: Tensor, spline: int = 3, bound: int = 3) -> Tensor:
         Spline coefficients, shape ``(..., N)``.
     """
     check_dtype(inp)
-    return _SplineCoeff.apply(inp, spline, bound)
+    return _SplineCoeff.apply(inp, as_spline(order), as_bound(bound))
 
 
 def _do_resample(
