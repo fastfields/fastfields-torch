@@ -99,7 +99,9 @@ def test_sym_invert_matches_dense(C):
 def test_resample_factor1_identity(dtype):
     # scale=1, shift=0, integer nodes => identity for interpolating order 1.
     x = torch.randn(3, 8, dtype=dtype)
-    y = fft.resample(x, 8, spline=1, bound=3, shift=0.0, scale=[1.0], ndim=1)
+    y = fft.resample(
+        x, shape=8, order=1, bound=3, shift=0.0, scale=[1.0], ndim=1
+    )
     tol = 1e-5 if dtype == torch.float32 else 1e-10
     assert torch.allclose(y, x, atol=tol, rtol=tol)
 
@@ -110,8 +112,8 @@ def test_resample_restriction_adjoint():
     # scale [2.0] below is the matching adjoint.
     x = torch.randn(3, 5, dtype=torch.float64)
     y = torch.randn(3, 10, dtype=torch.float64)
-    Rx = fft.resample(x, 10, spline=2, anchor="first")
-    Rty = fft.restriction(y, 5, spline=2, scale=[2.0])
+    Rx = fft.resample(x, shape=10, order=2, anchor="first")
+    Rty = fft.restriction(y, shape=5, order=2, scale=[2.0])
     assert torch.allclose((Rx * y).sum(), (x * Rty).sum(), atol=1e-10)
 
 
@@ -121,8 +123,8 @@ def test_resample_restriction_adjoint_by_anchor():
     for anchor in ("centers", "edges", "first", "last"):
         x = torch.randn(3, 5, dtype=torch.float64)
         y = torch.randn(3, 10, dtype=torch.float64)
-        Rx = fft.resample(x, 10, spline=2, anchor=anchor)
-        Rty = fft.restriction(y, 5, spline=2, anchor=anchor)
+        Rx = fft.resample(x, shape=10, order=2, anchor=anchor)
+        Rty = fft.restriction(y, shape=5, order=2, anchor=anchor)
         assert torch.allclose((Rx * y).sum(), (x * Rty).sum(), atol=1e-10), (
             anchor
         )
@@ -150,7 +152,9 @@ def test_anchor_scale_shift_mapping():
 
 def test_anchor_unknown_raises():
     with pytest.raises(ValueError, match="anchor"):
-        fft.resample(torch.arange(8, dtype=torch.float64), 4, anchor="nope")
+        fft.resample(
+            torch.arange(8, dtype=torch.float64), shape=4, anchor="nope"
+        )
 
 
 @pytest.mark.parametrize(
@@ -166,7 +170,7 @@ def test_resample_anchor_matches_grid(anchor, expected):
     # linear interp of the ramp reproduces the sampled coordinate; all coords
     # below stay inside [0, 7].
     x = torch.arange(8, dtype=torch.float64)
-    out = fft.resample(x, 4, spline=1, bound=3, anchor=anchor)
+    out = fft.resample(x, shape=4, order=1, bound=3, anchor=anchor)
     assert out.shape == (4,)
     assert torch.allclose(
         out, torch.tensor(expected, dtype=torch.float64), atol=1e-10
@@ -179,14 +183,35 @@ def test_resample_ndim_out_of_range_raises(fn, bad_ndim):
     # ndim must be in 1..inp.dim(); a 1-D input only supports ndim=1.
     x = torch.arange(8, dtype=torch.float64)
     with pytest.raises(ValueError, match="ndim"):
-        getattr(fft, fn)(x, 4, ndim=bad_ndim)
+        getattr(fft, fn)(x, shape=4, ndim=bad_ndim)
 
 
 def test_resample_default_anchor_is_centers():
     x = torch.arange(8, dtype=torch.float64)
-    default = fft.resample(x, 4, spline=1, bound=3)
-    centers = fft.resample(x, 4, spline=1, bound=3, anchor="centers")
+    default = fft.resample(x, shape=4, order=1, bound=3)
+    centers = fft.resample(x, shape=4, order=1, bound=3, anchor="centers")
     assert torch.equal(default, centers)
+
+
+def test_resample_factor_arg_matches_shape():
+    # factor=2 on a length-5 axis -> length-10 output, same as shape=10.
+    x = torch.arange(5, dtype=torch.float64)
+    by_factor = fft.resample(x, factor=2, order=1)
+    by_shape = fft.resample(x, shape=10, order=1)
+    assert by_factor.shape == (10,)
+    assert torch.equal(by_factor, by_shape)
+
+
+def test_resample_order_bound_string_aliases():
+    # order/bound accept ints, enums or names (unified with the numpy wrapper).
+    x = torch.arange(8, dtype=torch.float64)
+    by_name = fft.resample(x, shape=4, order="linear", bound="dct2")
+    by_int = fft.resample(x, shape=4, order=1, bound=3)
+    assert torch.equal(by_name, by_int)
+    with pytest.raises(ValueError, match="spline order"):
+        fft.resample(x, shape=4, order="nope")
+    with pytest.raises(ValueError, match="boundary"):
+        fft.resample(x, shape=4, bound="nope")
 
 
 # --------------------------------------------------------------------------- #
@@ -224,14 +249,14 @@ def test_gradcheck_sym_solve_weighted():
 def test_gradcheck_resample():
     x = torch.randn(2, 5, dtype=torch.float64, requires_grad=True)
     assert torch.autograd.gradcheck(
-        lambda t: fft.resample(t, 10, spline=2, bound=3), (x,)
+        lambda t: fft.resample(t, shape=10, order=2, bound=3), (x,)
     )
 
 
 def test_gradcheck_restriction():
     x = torch.randn(2, 10, dtype=torch.float64, requires_grad=True)
     assert torch.autograd.gradcheck(
-        lambda t: fft.restriction(t, 5, spline=2, bound=3), (x,)
+        lambda t: fft.restriction(t, shape=5, order=2, bound=3), (x,)
     )
 
 
