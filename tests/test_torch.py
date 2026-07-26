@@ -136,7 +136,8 @@ def test_resample_restriction_adjoint_by_anchor():
 
 
 def test_anchor_scale_shift_mapping():
-    from fastfields.torch._resample import _anchor_scale_shift
+    # the anchor->(scale, shift) map is shared via fastfields.dlpack
+    from fastfields.dlpack import anchor_scale_shift
 
     for name, abbr, exp_scale, exp_shift in [
         ("centers", "c", 7 / 3, 0.0),
@@ -144,10 +145,10 @@ def test_anchor_scale_shift_mapping():
         ("first", "f", 2.0, 0.0),
         ("last", "l", 2.0, 1.0),
     ]:
-        scale, shift = _anchor_scale_shift(name, (8,), (4,), 1)
+        scale, shift = anchor_scale_shift(name, (8,), (4,), 1)
         assert shift == exp_shift
         assert scale == pytest.approx([exp_scale])
-        assert _anchor_scale_shift(abbr, (8,), (4,), 1) == (scale, shift)
+        assert anchor_scale_shift(abbr, (8,), (4,), 1) == (scale, shift)
 
 
 def test_anchor_unknown_raises():

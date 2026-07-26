@@ -32,110 +32,21 @@ from __future__ import annotations
 from typing import Optional, Sequence
 
 import fastfields.dlpack as _fb
+from fastfields.dlpack import (
+    anchor_scale_shift,
+    as_bound,
+    as_spline,
+    check_ndim,
+    infer_ndim,
+    resolve_out_spatial,
+)
 
 import torch
 from torch import Tensor
 
-from ._util import as_bound, as_spline, check_dtype, stream_ptr
+from ._util import check_dtype, stream_ptr
 
 __all__ = ["resample", "restriction", "spline_coeff"]
-
-
-def _infer_ndim(
-    ndim: Optional[int],
-    factor: float | Sequence[float] | None,
-    shape: int | Sequence[int] | None,
-    inp_ndim: int,
-) -> int:
-    """Infer the number of trailing spatial dimensions to resize.
-
-    Mirrors the numpy wrapper: an explicit ``ndim`` wins; otherwise a sequence
-    ``shape`` or ``factor`` implies its length; failing that, ``1``.
-    """
-    if ndim is not None:
-        return int(ndim)
-    if shape is not None and not isinstance(shape, int):
-        return len(list(shape))
-    if factor is not None and not isinstance(factor, (int, float)):
-        return len(list(factor))
-    return 1
-
-
-def _resolve_out_spatial(
-    spatial_in: Sequence[int],
-    ndim: int,
-    factor: float | Sequence[float] | None,
-    shape: int | Sequence[int] | None,
-) -> tuple[int, ...]:
-    """Resolve the output spatial shape from ``factor`` or ``shape``.
-
-    ``factor`` and ``shape`` are mutually exclusive; with neither, the output
-    keeps the input spatial shape (identity). A scalar is broadcast to
-    ``ndim`` entries.
-    """
-    if shape is not None:
-        out = _normalize_shape(shape, ndim)
-        return tuple(int(s) for s in out)
-    if factor is not None:
-        if isinstance(factor, (int, float)):
-            factors = [float(factor)] * ndim
-        else:
-            factors = [float(f) for f in factor]
-        if len(factors) != ndim:
-            raise ValueError(
-                f"Expected factor of length ndim={ndim}, got {factors}."
-            )
-        return tuple(
-            max(1, int(round(n * f))) for n, f in zip(spatial_in, factors)
-        )
-    return tuple(int(n) for n in spatial_in)  # identity
-
-
-def _check_ndim(ndim: int, inp: Tensor) -> None:
-    """Validate that ``ndim`` is a usable spatial-dimension count for ``inp``.
-
-    Parameters
-    ----------
-    ndim : int
-        Number of trailing spatial dimensions requested.
-    inp : torch.Tensor
-        The input tensor.
-
-    Raises
-    ------
-    ValueError
-        If ``ndim`` is outside ``1..inp.dim()``.
-    """
-    if ndim < 1 or ndim > inp.dim():
-        raise ValueError(f"ndim must be in 1..{inp.dim()}, got {ndim}")
-
-
-def _normalize_shape(shape: int | Sequence[int], ndim: int) -> list[int]:
-    """Normalise a shape argument to a list of length ``ndim``.
-
-    Parameters
-    ----------
-    shape : int or sequence of int
-        Output spatial shape (an ``int`` is repeated ``ndim`` times).
-    ndim : int
-        Expected number of spatial dimensions.
-
-    Returns
-    -------
-    list of int
-        The normalised shape.
-
-    Raises
-    ------
-    ValueError
-        If ``shape`` does not have length ``ndim``.
-    """
-    if isinstance(shape, int):
-        shape = [shape] * ndim
-    shape = list(shape)
-    if len(shape) != ndim:
-        raise ValueError(f"Expected shape of length ndim={ndim}, got {shape}.")
-    return shape
 
 
 def _effective_scale(
@@ -172,74 +83,6 @@ def _effective_scale(
     if len(scale) != ndim:
         raise ValueError(f"Expected scale of length ndim={ndim}, got {scale}.")
     return [float(s) for s in scale]
-
-
-# torch-interpol anchor conventions (see ``interpol.resize``). Each anchor is
-# identified by its first (lower-cased) letter, so both the full name
-# ("centers") and the abbreviation ("c") are accepted.
-_ANCHORS = ("c", "e", "f", "l")
-_ANCHOR_SHIFT = {"e": 0.5, "f": 0.0, "l": 1.0}
-
-
-def _anchor_scale_shift(
-    anchor: str,
-    inshape: Sequence[int],
-    outshape: Sequence[int],
-    ndim: int,
-) -> tuple[list[float], float]:
-    """Map a torch-interpol ``anchor`` to a per-dim scale and scalar shift.
-
-    The fastfields resize kernel samples input coordinate
-    ``scale[d] * loc + shift * (scale[d] - 1)`` for output index ``loc``. The
-    four anchors of ``interpol.resize`` map onto ``(scale, shift)`` as:
-
-    ==========  =================  =======
-    anchor      scale[d]           shift
-    ==========  =================  =======
-    ``centers`` ``(in-1)/(out-1)`` ``0.0``
-    ``edges``   ``in/out``         ``0.5``
-    ``first``   ``in/out``         ``0.0``
-    ``last``    ``in/out``         ``1.0``
-    ==========  =================  =======
-
-    Parameters
-    ----------
-    anchor : str
-        Anchor name or abbreviation (``centers``/``edges``/``first``/``last``
-        or ``c``/``e``/``f``/``l``); matched case-insensitively on the first
-        letter, mirroring ``interpol.resize``.
-    inshape, outshape : sequence of int
-        Input and output spatial sizes.
-    ndim : int
-        Number of spatial dimensions.
-
-    Returns
-    -------
-    scale : list of float
-        Per-dim input-index step per output-index step.
-    shift : float
-        Scalar sampling shift shared across dimensions.
-
-    Raises
-    ------
-    ValueError
-        If ``anchor`` is empty or its first letter is not one of ``c/e/f/l``.
-    """
-    key = str(anchor)[:1].lower()
-    if key not in _ANCHORS:
-        raise ValueError(
-            f"anchor must be one of centers/edges/first/last, got {anchor!r}"
-        )
-    if key == "c":
-        scale = [
-            ((inshape[d] - 1) / (outshape[d] - 1))
-            if (inshape[d] > 1 and outshape[d] > 1)
-            else 1.0
-            for d in range(ndim)
-        ]
-        return scale, 0.0
-    scale = [float(inshape[d]) / float(outshape[d]) for d in range(ndim)]
-    return scale, _ANCHOR_SHIFT[key]
 
 
 def resample(
@@ -281,7 +124,8 @@ def resample(
     anchor : {"centers", "edges", "first", "last"}, default="centers"
         Sampling-grid convention, matching ``interpol.resize``. Sets the
         default per-dim ``scale`` and ``shift`` (see
-        :func:`_anchor_scale_shift`). Abbreviations (``"c"``/``"e"``/``"f"``/
+        :func:`fastfields.dlpack.anchor_scale_shift`). Abbreviations
+        (``"c"``/``"e"``/``"f"``/
         ``"l"``) are accepted.
     shift : float, optional
         Sampling-shift override (default: the shift implied by ``anchor``).
@@ -301,11 +145,11 @@ def resample(
         is unknown, or ``factor``/``shape`` has the wrong length.
     """
     check_dtype(inp)
-    ndim = _infer_ndim(ndim, factor, shape, inp.dim())
-    _check_ndim(ndim, inp)
+    ndim = infer_ndim(ndim, factor, shape)
+    check_ndim(ndim, inp.dim())
     spatial_in = tuple(inp.shape[-ndim:])
-    out_spatial = _resolve_out_spatial(spatial_in, ndim, factor, shape)
-    a_scale, a_shift = _anchor_scale_shift(
+    out_spatial = resolve_out_spatial(spatial_in, ndim, factor, shape)
+    a_scale, a_shift = anchor_scale_shift(
         anchor, spatial_in, out_spatial, ndim
     )
     if scale is not None:
@@ -379,11 +223,11 @@ def restriction(
         is unknown, or ``factor``/``shape`` has the wrong length.
     """
     check_dtype(inp)
-    ndim = _infer_ndim(ndim, factor, shape, inp.dim())
-    _check_ndim(ndim, inp)
+    ndim = infer_ndim(ndim, factor, shape)
+    check_ndim(ndim, inp.dim())
     spatial_in = tuple(inp.shape[-ndim:])
-    out_spatial = _resolve_out_spatial(spatial_in, ndim, factor, shape)
-    a_scale, a_shift = _anchor_scale_shift(
+    out_spatial = resolve_out_spatial(spatial_in, ndim, factor, shape)
+    a_scale, a_shift = anchor_scale_shift(
         anchor, spatial_in, out_spatial, ndim
     )
     if scale is not None:
