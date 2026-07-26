@@ -123,9 +123,9 @@ def test_resample_restriction_adjoint_by_anchor():
         y = torch.randn(3, 10, dtype=torch.float64)
         Rx = fft.resample(x, 10, spline=2, anchor=anchor)
         Rty = fft.restriction(y, 5, spline=2, anchor=anchor)
-        assert torch.allclose(
-            (Rx * y).sum(), (x * Rty).sum(), atol=1e-10
-        ), anchor
+        assert torch.allclose((Rx * y).sum(), (x * Rty).sum(), atol=1e-10), (
+            anchor
+        )
 
 
 # --------------------------------------------------------------------------- #
