@@ -18,9 +18,11 @@ applies the same prefilter to the gradient.
 Notes
 -----
 * ``scale`` uses the binding convention "input-index per output-index".
-* The binding segfaults when ``scale=None`` is passed, so this wrapper always
-  computes an explicit scale from the shapes when the caller does not provide
-  one (``scale[d] = inshape[d] / outshape[d]``).
+* This wrapper always passes the binding an explicit per-dim ``scale`` --
+  derived from ``anchor`` and the shapes, or from an explicit ``scale``
+  override (see :func:`resample`). (The binding itself now handles
+  ``scale=None`` by defaulting to ``inshape / outshape``; the wrapper resolves
+  the scale up front so the ``anchor`` conventions are applied consistently.)
 * On CUDA tensors the current stream is forwarded to the binding (see
   :mod:`fastfields.torch._util`).
 """
@@ -37,6 +39,25 @@ from torch import Tensor
 from ._util import check_dtype, stream_ptr
 
 __all__ = ["resample", "restriction", "spline_coeff"]
+
+
+def _check_ndim(ndim: int, inp: Tensor) -> None:
+    """Validate that ``ndim`` is a usable spatial-dimension count for ``inp``.
+
+    Parameters
+    ----------
+    ndim : int
+        Number of trailing spatial dimensions requested.
+    inp : torch.Tensor
+        The input tensor.
+
+    Raises
+    ------
+    ValueError
+        If ``ndim`` is outside ``1..inp.dim()``.
+    """
+    if ndim < 1 or ndim > inp.dim():
+        raise ValueError(f"ndim must be in 1..{inp.dim()}, got {ndim}")
 
 
 def _normalize_shape(shape: int | Sequence[int], ndim: int) -> list[int]:
@@ -219,8 +240,14 @@ def resample(
     -------
     torch.Tensor
         Resampled tensor, shape ``(..., *shape)``.
+
+    Raises
+    ------
+    ValueError
+        If ``ndim`` is outside ``1..inp.dim()`` or ``anchor`` is unknown.
     """
     check_dtype(inp)
+    _check_ndim(ndim, inp)
     shape = _normalize_shape(shape, ndim)
     a_scale, a_shift = _anchor_scale_shift(
         anchor, inp.shape[-ndim:], shape, ndim
@@ -275,8 +302,14 @@ def restriction(
     -------
     torch.Tensor
         Restricted tensor, shape ``(..., *shape)``.
+
+    Raises
+    ------
+    ValueError
+        If ``ndim`` is outside ``1..inp.dim()`` or ``anchor`` is unknown.
     """
     check_dtype(inp)
+    _check_ndim(ndim, inp)
     shape = _normalize_shape(shape, ndim)
     a_scale, a_shift = _anchor_scale_shift(
         anchor, inp.shape[-ndim:], shape, ndim

@@ -173,6 +173,15 @@ def test_resample_anchor_matches_grid(anchor, expected):
     )
 
 
+@pytest.mark.parametrize("fn", ["resample", "restriction"])
+@pytest.mark.parametrize("bad_ndim", [0, -1, 2])
+def test_resample_ndim_out_of_range_raises(fn, bad_ndim):
+    # ndim must be in 1..inp.dim(); a 1-D input only supports ndim=1.
+    x = torch.arange(8, dtype=torch.float64)
+    with pytest.raises(ValueError, match="ndim"):
+        getattr(fft, fn)(x, 4, ndim=bad_ndim)
+
+
 def test_resample_default_anchor_is_centers():
     x = torch.arange(8, dtype=torch.float64)
     default = fft.resample(x, 4, spline=1, bound=3)
