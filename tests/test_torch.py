@@ -561,3 +561,36 @@ def test_flow_precond_gradcheck_vec():
         eps=1e-6,
         atol=1e-4,
     )
+
+
+def test_flow_accumulate_variants():
+    torch.manual_seed(3)
+    H, W = 5, 6
+    flow = torch.randn(H, W, 2, dtype=torch.float64)
+    base = torch.randn(H, W, 2, dtype=torch.float64)
+    kw = dict(absolute=0.3, membrane=0.7, shears=1.0, div=0.5, ndim=2)
+    L = fft.flow_matvec(flow, **kw)
+    d = fft.flow_diag(base.shape, **kw)
+    assert torch.allclose(fft.flow_matvec_add(base, flow, **kw), base + L)
+    assert torch.allclose(fft.flow_matvec_sub(base, flow, **kw), base - L)
+    assert torch.allclose(fft.flow_diag_add(base, **kw), base + d)
+    assert torch.allclose(fft.flow_diag_sub(base, **kw), base - d)
+    # in-place forms mutate and return the same tensor
+    a = base.clone()
+    assert fft.flow_matvec_add_(a, flow, **kw) is a
+    assert torch.allclose(a, base + L)
+    s = base.clone()
+    assert fft.flow_diag_sub_(s, **kw) is s
+    assert torch.allclose(s, base - d)
+
+
+def test_flow_matvec_add_gradcheck():
+    # fresh-array add composes the autograd flow_matvec -> differentiable.
+    H, W = 3, 4
+    base = torch.randn(H, W, 2, dtype=torch.float64, requires_grad=True)
+    flow = torch.randn(H, W, 2, dtype=torch.float64, requires_grad=True)
+    kw = dict(absolute=0.2, membrane=0.5, shears=1.3, div=0.7, ndim=2)
+    assert torch.autograd.gradcheck(
+        lambda p, f: fft.flow_matvec_add(p, f, **kw),
+        (base, flow), eps=1e-6, atol=1e-4,
+    )
