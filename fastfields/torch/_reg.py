@@ -21,7 +21,13 @@ from torch import Tensor
 
 from ._util import check_dtype, stream_ptr
 
-__all__ = ["field_matvec", "field_diag", "flow_matvec", "flow_diag"]
+__all__ = [
+    "field_matvec",
+    "field_diag",
+    "flow_matvec",
+    "flow_diag",
+    "flow_relax",
+]
 
 
 def _per_channel(value, channels: int, name: str) -> Optional[list]:
@@ -250,3 +256,43 @@ def flow_diag(
         stream=stream_ptr(out),
     )
     return out
+
+
+def flow_relax(
+    flow: Tensor,
+    hes: Tensor,
+    grd: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+    nb_iter: int = 1,
+) -> Tensor:
+    """Refine ``flow`` in place with ``nb_iter`` relaxation sweeps.
+
+    Solves ``(H + L) x = g`` with per-voxel symmetric Hessian ``hes`` and
+    gradient ``grd``. Not differentiable (an in-place iterative solver);
+    ``flow`` is the warm start, mutated and returned.
+    """
+    check_dtype(flow)
+    _fb.flow_relax(
+        flow,
+        hes.contiguous(),
+        grd.contiguous(),
+        voxel_size=_voxel(voxel_size, ndim),
+        absolute=float(absolute),
+        membrane=float(membrane),
+        bending=float(bending),
+        shears=float(shears),
+        div=float(div),
+        bound=as_bound(bound),
+        ndim=ndim,
+        nb_iter=int(nb_iter),
+        stream=stream_ptr(flow),
+    )
+    return flow
