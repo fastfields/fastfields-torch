@@ -594,3 +594,40 @@ def test_flow_matvec_add_gradcheck():
         lambda p, f: fft.flow_matvec_add(p, f, **kw),
         (base, flow), eps=1e-6, atol=1e-4,
     )
+
+
+def _field_hessian(H, W, C, seed):
+    A = torch.randn(H * W, C, C, dtype=torch.float64)
+    A = A @ A.transpose(-1, -2) + (C + 1) * torch.eye(C, dtype=torch.float64)
+    return pack_from_dense(A, C).reshape(H, W, len(_PACK[C]))
+
+
+def test_field_forward_and_precond():
+    H, W, C = 5, 6, 2
+    mat = _field_hessian(H, W, C, 5)
+    vec = torch.randn(H, W, C, dtype=torch.float64)
+    kw = dict(absolute=[0.3, 0.4], membrane=[0.7, 0.5], ndim=2)
+    fwd = fft.field_forward(mat, vec, **kw)
+    assert torch.allclose(
+        fwd, fft.sym_matvec(mat, vec) + fft.field_matvec(vec, **kw), atol=1e-10
+    )
+    x = fft.field_precond(mat, vec, **kw)
+    diag = fft.field_diag(vec.shape, **kw)
+    residual = fft.sym_matvec(mat, x) + diag * x - vec
+    assert torch.allclose(residual, torch.zeros_like(residual), atol=1e-5)
+
+
+def test_field_accumulate_variants():
+    H, W, C = 5, 6, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    base = torch.randn(H, W, C, dtype=torch.float64)
+    kw = dict(absolute=[0.3, 0.4], membrane=[0.7, 0.5], ndim=2)
+    L = fft.field_matvec(field, **kw)
+    d = fft.field_diag(base.shape, **kw)
+    assert torch.allclose(fft.field_matvec_add(base, field, **kw), base + L)
+    assert torch.allclose(fft.field_matvec_sub(base, field, **kw), base - L)
+    assert torch.allclose(fft.field_diag_add(base, **kw), base + d)
+    assert torch.allclose(fft.field_diag_sub(base, **kw), base - d)
+    a = base.clone()
+    assert fft.field_matvec_add_(a, field, **kw) is a
+    assert torch.allclose(a, base + L)

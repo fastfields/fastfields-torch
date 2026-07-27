@@ -24,7 +24,17 @@ from ._util import check_dtype, stream_ptr
 
 __all__ = [
     "field_matvec",
+    "field_matvec_add",
+    "field_matvec_add_",
+    "field_matvec_sub",
+    "field_matvec_sub_",
     "field_diag",
+    "field_diag_add",
+    "field_diag_add_",
+    "field_diag_sub",
+    "field_diag_sub_",
+    "field_precond",
+    "field_forward",
     "flow_matvec",
     "flow_matvec_add",
     "flow_matvec_add_",
@@ -582,6 +592,151 @@ def flow_diag_sub_(
     """In place ``inp -= diag(L)``; returns ``inp``."""
     inp -= flow_diag(
         inp.shape, absolute, membrane, bending, shears, div,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        dtype=inp.dtype, device=inp.device,
+    )
+    return inp
+
+
+# --- field: precond / forward / accumulate -------------------------------
+#
+# Field analogues of the flow helpers. The fresh forms compose the autograd
+# field_matvec / sym ops, so they stay differentiable; the in-place forms use
+# augmented assignment. Pure Python compositions -- no new kernel.
+
+
+def field_precond(
+    mat: Tensor,
+    vec: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """Apply the preconditioner ``(M + diag(R)) \\ vec`` (diff wrt vec)."""
+    check_dtype(vec)
+    diag = field_diag(
+        vec.shape, absolute, membrane, bending,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        dtype=vec.dtype, device=vec.device,
+    )
+    return sym_solve(mat, vec, diag)
+
+
+def field_forward(
+    mat: Tensor,
+    vec: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """Apply ``(M + R) @ vec`` (differentiable wrt ``mat`` and ``vec``)."""
+    check_dtype(vec)
+    out = sym_matvec(mat, vec)
+    out = out + field_matvec(
+        vec, absolute, membrane, bending,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+    )
+    return out
+
+
+def field_matvec_add(
+    inp: Tensor, field: Tensor, absolute=None, membrane=None, bending=None,
+    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+) -> Tensor:
+    """Return ``inp + L @ field`` (fresh); ``L`` = field regulariser."""
+    return inp + field_matvec(
+        field, absolute, membrane, bending,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+    )
+
+
+def field_matvec_sub(
+    inp: Tensor, field: Tensor, absolute=None, membrane=None, bending=None,
+    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+) -> Tensor:
+    """Return ``inp - L @ field`` (fresh)."""
+    return inp - field_matvec(
+        field, absolute, membrane, bending,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+    )
+
+
+def field_matvec_add_(
+    inp: Tensor, field: Tensor, absolute=None, membrane=None, bending=None,
+    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+) -> Tensor:
+    """In place ``inp += L @ field``; returns ``inp``."""
+    inp += field_matvec(
+        field, absolute, membrane, bending,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+    )
+    return inp
+
+
+def field_matvec_sub_(
+    inp: Tensor, field: Tensor, absolute=None, membrane=None, bending=None,
+    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+) -> Tensor:
+    """In place ``inp -= L @ field``; returns ``inp``."""
+    inp -= field_matvec(
+        field, absolute, membrane, bending,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+    )
+    return inp
+
+
+def field_diag_add(
+    inp: Tensor, absolute=None, membrane=None, bending=None,
+    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+) -> Tensor:
+    """Return ``inp + diag(L)`` (fresh), shaped like ``inp``."""
+    return inp + field_diag(
+        inp.shape, absolute, membrane, bending,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        dtype=inp.dtype, device=inp.device,
+    )
+
+
+def field_diag_sub(
+    inp: Tensor, absolute=None, membrane=None, bending=None,
+    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+) -> Tensor:
+    """Return ``inp - diag(L)`` (fresh), shaped like ``inp``."""
+    return inp - field_diag(
+        inp.shape, absolute, membrane, bending,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        dtype=inp.dtype, device=inp.device,
+    )
+
+
+def field_diag_add_(
+    inp: Tensor, absolute=None, membrane=None, bending=None,
+    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+) -> Tensor:
+    """In place ``inp += diag(L)``; returns ``inp``."""
+    inp += field_diag(
+        inp.shape, absolute, membrane, bending,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        dtype=inp.dtype, device=inp.device,
+    )
+    return inp
+
+
+def field_diag_sub_(
+    inp: Tensor, absolute=None, membrane=None, bending=None,
+    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+) -> Tensor:
+    """In place ``inp -= diag(L)``; returns ``inp``."""
+    inp -= field_diag(
+        inp.shape, absolute, membrane, bending,
         voxel_size=voxel_size, bound=bound, ndim=ndim,
         dtype=inp.dtype, device=inp.device,
     )
