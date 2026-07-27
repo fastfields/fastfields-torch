@@ -452,6 +452,23 @@ def test_flow_matvec_gradcheck():
     )
 
 
+@pytest.mark.parametrize("bound", ["dct2", "dft"])
+def test_flow_matvec_lame_gradcheck(bound):
+    # The linear-elastic (shears/div) operator is self-adjoint, so its
+    # autograd backward (which re-applies the same matvec) must pass gradcheck
+    # under reflecting boundaries too.
+    v = torch.randn(5, 6, 2, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(
+        lambda z: fft.flow_matvec(
+            z, absolute=0.2, membrane=0.5, shears=1.3, div=0.7,
+            ndim=2, bound=bound,
+        ),
+        (v,),
+        eps=1e-6,
+        atol=1e-4,
+    )
+
+
 def test_field_diag_absolute():
     d = fft.field_diag((8, 2), absolute=2.0, ndim=1)
     assert torch.allclose(d, torch.tensor(2.0, dtype=torch.float64))

@@ -93,7 +93,8 @@ class _FieldMatvec(torch.autograd.Function):
 class _FlowMatvec(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx, inp, voxel_size, absolute, membrane, bending, bound, ndim
+        ctx, inp, voxel_size, absolute, membrane, bending, shears, div,
+        bound, ndim
     ):
         out = inp.new_zeros(inp.shape)
         _fb.flow_matvec(
@@ -103,18 +104,23 @@ class _FlowMatvec(torch.autograd.Function):
             absolute=absolute,
             membrane=membrane,
             bending=bending,
+            shears=shears,
+            div=div,
             bound=bound,
             ndim=ndim,
             stream=stream_ptr(out),
         )
-        ctx.args = (voxel_size, absolute, membrane, bending, bound, ndim)
+        ctx.args = (voxel_size, absolute, membrane, bending, shears, div,
+                    bound, ndim)
         return out
 
     @staticmethod
     def backward(ctx, grad_out):
+        # The flow regulariser operator is self-adjoint, so the adjoint of the
+        # forward matvec is the same matvec applied to grad_out.
         ginp = None
         if ctx.needs_input_grad[0]:
-            vs, ab, mem, ben, bnd, ndim = ctx.args
+            vs, ab, mem, ben, sh, dv, bnd, ndim = ctx.args
             ginp = grad_out.new_zeros(grad_out.shape)
             _fb.flow_matvec(
                 ginp,
@@ -123,11 +129,13 @@ class _FlowMatvec(torch.autograd.Function):
                 absolute=ab,
                 membrane=mem,
                 bending=ben,
+                shears=sh,
+                div=dv,
                 bound=bnd,
                 ndim=ndim,
                 stream=stream_ptr(ginp),
             )
-        return ginp, None, None, None, None, None, None
+        return ginp, None, None, None, None, None, None, None, None
 
 
 def field_matvec(
@@ -159,12 +167,18 @@ def flow_matvec(
     absolute: float = 0.0,
     membrane: float = 0.0,
     bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
     *,
     voxel_size=None,
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """Apply the flow regulariser (scalar penalties; diff'able wrt inp)."""
+    """Apply the flow regulariser (scalar penalties; diff'able wrt inp).
+
+    ``shears`` (Lamé mu) and ``div`` (Lamé lambda) add the linear-elastic
+    penalty coupling the flow channels.
+    """
     check_dtype(inp)
     return _FlowMatvec.apply(
         inp,
@@ -172,6 +186,8 @@ def flow_matvec(
         float(absolute),
         float(membrane),
         float(bending),
+        float(shears),
+        float(div),
         as_bound(bound),
         ndim,
     )
@@ -210,6 +226,8 @@ def flow_diag(
     absolute: float = 0.0,
     membrane: float = 0.0,
     bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
     *,
     voxel_size=None,
     bound: int | str = "dct2",
@@ -225,6 +243,8 @@ def flow_diag(
         absolute=float(absolute),
         membrane=float(membrane),
         bending=float(bending),
+        shears=float(shears),
+        div=float(div),
         bound=as_bound(bound),
         ndim=ndim,
         stream=stream_ptr(out),
