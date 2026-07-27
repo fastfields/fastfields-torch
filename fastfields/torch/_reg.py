@@ -26,7 +26,15 @@ __all__ = [
     "field_matvec",
     "field_diag",
     "flow_matvec",
+    "flow_matvec_add",
+    "flow_matvec_add_",
+    "flow_matvec_sub",
+    "flow_matvec_sub_",
     "flow_diag",
+    "flow_diag_add",
+    "flow_diag_add_",
+    "flow_diag_sub",
+    "flow_diag_sub_",
     "flow_kernel",
     "flow_relax",
     "flow_precond",
@@ -406,3 +414,175 @@ def flow_forward(
         voxel_size=voxel_size, bound=bound, ndim=ndim,
     )
     return out
+
+
+# --- accumulate variants -------------------------------------------------
+#
+# jitfields' ``_add`` / ``_sub`` (fresh array) and trailing-underscore in-place
+# forms, as thin compositions ``inp ± op(...)``. The fresh forms compose the
+# autograd flow_matvec, so they stay differentiable; the in-place forms use
+# augmented assignment (``add_``/``sub_``), intended for non-autograd use.
+
+
+def flow_matvec_add(
+    inp: Tensor,
+    flow: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """Return ``inp + L @ flow`` (fresh); ``L`` is the flow regulariser."""
+    return inp + flow_matvec(
+        flow, absolute, membrane, bending, shears, div,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+    )
+
+
+def flow_matvec_sub(
+    inp: Tensor,
+    flow: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """Return ``inp - L @ flow`` (fresh)."""
+    return inp - flow_matvec(
+        flow, absolute, membrane, bending, shears, div,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+    )
+
+
+def flow_matvec_add_(
+    inp: Tensor,
+    flow: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """In place ``inp += L @ flow``; returns ``inp``."""
+    inp += flow_matvec(
+        flow, absolute, membrane, bending, shears, div,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+    )
+    return inp
+
+
+def flow_matvec_sub_(
+    inp: Tensor,
+    flow: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """In place ``inp -= L @ flow``; returns ``inp``."""
+    inp -= flow_matvec(
+        flow, absolute, membrane, bending, shears, div,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+    )
+    return inp
+
+
+def flow_diag_add(
+    inp: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """Return ``inp + diag(L)`` (fresh), shaped like ``inp``."""
+    return inp + flow_diag(
+        inp.shape, absolute, membrane, bending, shears, div,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        dtype=inp.dtype, device=inp.device,
+    )
+
+
+def flow_diag_sub(
+    inp: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """Return ``inp - diag(L)`` (fresh), shaped like ``inp``."""
+    return inp - flow_diag(
+        inp.shape, absolute, membrane, bending, shears, div,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        dtype=inp.dtype, device=inp.device,
+    )
+
+
+def flow_diag_add_(
+    inp: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """In place ``inp += diag(L)``; returns ``inp``."""
+    inp += flow_diag(
+        inp.shape, absolute, membrane, bending, shears, div,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        dtype=inp.dtype, device=inp.device,
+    )
+    return inp
+
+
+def flow_diag_sub_(
+    inp: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """In place ``inp -= diag(L)``; returns ``inp``."""
+    inp -= flow_diag(
+        inp.shape, absolute, membrane, bending, shears, div,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        dtype=inp.dtype, device=inp.device,
+    )
+    return inp
