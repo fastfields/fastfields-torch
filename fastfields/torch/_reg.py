@@ -33,6 +33,7 @@ __all__ = [
     "field_diag_add_",
     "field_diag_sub",
     "field_diag_sub_",
+    "field_kernel",
     "field_precond",
     "field_forward",
     "flow_matvec",
@@ -219,6 +220,60 @@ def flow_matvec(
         as_bound(bound),
         ndim,
     )
+
+
+def _field_channels(channels, *penalties) -> int:
+    """Infer C from an explicit value or the per-channel penalty lengths."""
+    if channels is not None:
+        return int(channels)
+    for p in penalties:
+        if p is not None and not isinstance(p, (int, float)):
+            return len(p)
+    return 1
+
+
+def field_kernel(
+    ndim: int,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    channels: int | None = None,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    dtype: torch.dtype = torch.float64,
+    device=None,
+) -> Tensor:
+    """Materialise the field regulariser's per-channel Toeplitz stencil.
+
+    Returns the small centred kernel that, convolved with a field, reproduces
+    :func:`field_matvec`. The shape is ``(*k, C)`` (channels are independent),
+    with ``k`` the stencil width per spatial dim: 1 (absolute), 3 (membrane) or
+    5 (bending). ``C`` is ``channels`` if given, else inferred from the
+    per-channel penalty lengths (default 1). Not differentiable.
+    """
+    ndim = int(ndim)
+    channels = _field_channels(channels, absolute, membrane, bending)
+    if bending is not None:
+        width = 5
+    elif membrane is not None:
+        width = 3
+    else:
+        width = 1
+    out = torch.zeros(
+        tuple([width] * ndim + [channels]), dtype=dtype, device=device
+    )
+    _fb.field_kernel(
+        out,
+        voxel_size=_voxel(voxel_size, ndim),
+        absolute=_per_channel(absolute, channels, "absolute"),
+        membrane=_per_channel(membrane, channels, "membrane"),
+        bending=_per_channel(bending, channels, "bending"),
+        bound=as_bound(bound),
+        ndim=ndim,
+        stream=stream_ptr(out),
+    )
+    return out
 
 
 def field_diag(

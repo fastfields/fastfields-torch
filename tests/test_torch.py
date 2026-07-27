@@ -631,3 +631,38 @@ def test_field_accumulate_variants():
     a = base.clone()
     assert fft.field_matvec_add_(a, field, **kw) is a
     assert torch.allclose(a, base + L)
+
+
+@pytest.mark.parametrize(
+    "order,width,kw",
+    [
+        (1, 1, dict(absolute=[2.5, 1.5])),
+        (2, 3, dict(absolute=[0.3, 0.4], membrane=[1.0, 0.7])),
+        (3, 5, dict(absolute=[0.3, 0.4], membrane=[0.5, 0.6],
+                    bending=[1.0, 0.8])),
+    ],
+)
+def test_field_kernel_is_matvec_impulse_response(order, width, kw):
+    C = 2
+    K = fft.field_kernel(2, **kw)
+    assert tuple(K.shape) == (width, width, C)
+    kd = width
+    N, cc, half = 2 * kd + 1, kd, kd // 2
+    for c0 in range(C):
+        x = torch.zeros(N, N, C, dtype=torch.float64)
+        x[cc, cc, c0] = 1.0
+        o = fft.field_matvec(x, ndim=2, **kw)
+        for a in range(kd):
+            for b in range(kd):
+                for c in range(C):
+                    got = o[cc + a - half, cc + b - half, c]
+                    kern = K[a, b, c] if c == c0 else torch.tensor(
+                        0.0, dtype=torch.float64)
+                    assert torch.allclose(got, torch.as_tensor(
+                        kern, dtype=torch.float64), atol=1e-10)
+
+
+def test_field_kernel_channels_inference():
+    k = fft.field_kernel(2, absolute=[1.0, 2.0, 3.0])
+    assert tuple(k.shape) == (1, 1, 3)
+    assert tuple(fft.field_kernel(1, absolute=2.0, channels=4).shape) == (1, 4)
