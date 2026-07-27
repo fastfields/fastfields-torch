@@ -19,6 +19,7 @@ from fastfields.dlpack import as_bound
 import torch
 from torch import Tensor
 
+from ._sym import sym_matvec, sym_solve
 from ._util import check_dtype, stream_ptr
 
 __all__ = [
@@ -27,6 +28,8 @@ __all__ = [
     "flow_matvec",
     "flow_diag",
     "flow_relax",
+    "flow_precond",
+    "flow_forward",
 ]
 
 
@@ -296,3 +299,60 @@ def flow_relax(
         stream=stream_ptr(flow),
     )
     return flow
+
+
+def flow_precond(
+    mat: Tensor,
+    vec: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """Apply the preconditioner ``(M + diag(R)) \\ vec``.
+
+    ``M`` is the per-voxel compact-symmetric matrix ``mat``; ``diag(R)`` is the
+    diagonal of the flow regulariser (same penalties as :func:`flow_matvec`).
+    A composition of :func:`flow_diag` and :func:`sym_solve` — no new kernel;
+    differentiable wrt ``vec`` (through the self-adjoint solve).
+    """
+    check_dtype(vec)
+    diag = flow_diag(
+        vec.shape, absolute, membrane, bending, shears, div,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        dtype=vec.dtype, device=vec.device,
+    )
+    return sym_solve(mat, vec, diag)
+
+
+def flow_forward(
+    mat: Tensor,
+    vec: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """Apply the forward matrix-vector product ``(M + R) @ vec``.
+
+    ``M`` is the per-voxel compact-symmetric matrix ``mat`` and ``R`` the flow
+    regulariser operator. A composition of :func:`sym_matvec` and
+    :func:`flow_matvec` — no new kernel; differentiable wrt ``mat``/``vec``.
+    """
+    check_dtype(vec)
+    out = sym_matvec(mat, vec)
+    out = out + flow_matvec(
+        vec, absolute, membrane, bending, shears, div,
+        voxel_size=voxel_size, bound=bound, ndim=ndim,
+    )
+    return out

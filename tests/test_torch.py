@@ -472,3 +472,59 @@ def test_flow_matvec_lame_gradcheck(bound):
 def test_field_diag_absolute():
     d = fft.field_diag((8, 2), absolute=2.0, ndim=1)
     assert torch.allclose(d, torch.tensor(2.0, dtype=torch.float64))
+
+
+def _flow_hessian_2d(H, W, C=2):
+    # Per-voxel SPD Hessian, packed compact-symmetric -> (H, W, C*(C+1)//2).
+    return random_spd((H, W), C).reshape(H, W, len(_PACK[C]))
+
+
+def test_flow_forward_is_sym_matvec_plus_flow_matvec():
+    # (M + R) v == M v + R v, by construction.
+    H, W = 5, 6
+    mat = _flow_hessian_2d(H, W)
+    vec = torch.randn(H, W, 2, dtype=torch.float64)
+    kw = dict(absolute=0.3, membrane=0.7, shears=1.0, div=0.5)
+    fwd = fft.flow_forward(mat, vec, ndim=2, **kw)
+    expect = fft.sym_matvec(mat, vec) + fft.flow_matvec(vec, ndim=2, **kw)
+    assert torch.allclose(fwd, expect, atol=1e-10)
+
+
+def test_flow_precond_solves_diagonal_system():
+    # x = (M + diag(R)) \ v  =>  M x + diag(R) x == v.
+    H, W = 5, 6
+    mat = _flow_hessian_2d(H, W)
+    vec = torch.randn(H, W, 2, dtype=torch.float64)
+    kw = dict(absolute=0.3, membrane=0.7, shears=1.0, div=0.5)
+    x = fft.flow_precond(mat, vec, ndim=2, **kw)
+    diag = fft.flow_diag(vec.shape, ndim=2, **kw)
+    residual = fft.sym_matvec(mat, x) + diag * x - vec
+    assert torch.allclose(residual, torch.zeros_like(residual), atol=1e-5)
+
+
+def test_flow_forward_gradcheck():
+    # Composition of autograd ops -> differentiable wrt mat and vec.
+    H, W = 3, 4
+    mat = _flow_hessian_2d(H, W).requires_grad_(True)
+    vec = torch.randn(H, W, 2, dtype=torch.float64, requires_grad=True)
+    kw = dict(absolute=0.2, membrane=0.5, shears=1.3, div=0.7)
+    assert torch.autograd.gradcheck(
+        lambda m, v: fft.flow_forward(m, v, ndim=2, **kw),
+        (mat, vec),
+        eps=1e-6,
+        atol=1e-4,
+    )
+
+
+def test_flow_precond_gradcheck_vec():
+    # sym_solve is self-adjoint and differentiable wrt vec (not mat).
+    H, W = 3, 4
+    mat = _flow_hessian_2d(H, W)
+    vec = torch.randn(H, W, 2, dtype=torch.float64, requires_grad=True)
+    kw = dict(absolute=0.3, membrane=0.5, shears=1.0, div=0.5)
+    assert torch.autograd.gradcheck(
+        lambda v: fft.flow_precond(mat, v, ndim=2, **kw),
+        (vec,),
+        eps=1e-6,
+        atol=1e-4,
+    )
