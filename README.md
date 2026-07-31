@@ -1,7 +1,7 @@
 # fastfields-torch
 
 A user-friendly, **autograd-enabled** PyTorch interface over the
-[`fastfields.dlpack`](../fastfields-bind-py) nanobind bindings.
+[`fastfields.dlpack`](https://github.com/fastfields/fastfields-dlpack) nanobind bindings.
 
 Functions take and return `torch` tensors (CPU float32/float64), allocate their
 own outputs, and route through the bindings' DLPack path so the same code will

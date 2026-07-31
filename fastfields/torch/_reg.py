@@ -122,8 +122,16 @@ class _FieldMatvec(torch.autograd.Function):
 class _FlowMatvec(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx, inp, voxel_size, absolute, membrane, bending, shears, div,
-        bound, ndim
+        ctx,
+        inp,
+        voxel_size,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        bound,
+        ndim,
     ):
         out = inp.new_zeros(inp.shape)
         _fb.flow_matvec(
@@ -139,8 +147,16 @@ class _FlowMatvec(torch.autograd.Function):
             ndim=ndim,
             stream=stream_ptr(out),
         )
-        ctx.args = (voxel_size, absolute, membrane, bending, shears, div,
-                    bound, ndim)
+        ctx.args = (
+            voxel_size,
+            absolute,
+            membrane,
+            bending,
+            shears,
+            div,
+            bound,
+            ndim,
+        )
         return out
 
     @staticmethod
@@ -446,9 +462,17 @@ def flow_precond(
     """
     check_dtype(vec)
     diag = flow_diag(
-        vec.shape, absolute, membrane, bending, shears, div,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
-        dtype=vec.dtype, device=vec.device,
+        vec.shape,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
+        dtype=vec.dtype,
+        device=vec.device,
     )
     return sym_solve(mat, vec, diag)
 
@@ -475,8 +499,15 @@ def flow_forward(
     check_dtype(vec)
     out = sym_matvec(mat, vec)
     out = out + flow_matvec(
-        vec, absolute, membrane, bending, shears, div,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        vec,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
     )
     return out
 
@@ -504,8 +535,15 @@ def flow_matvec_add(
 ) -> Tensor:
     """Return ``inp + L @ flow`` (fresh); ``L`` is the flow regulariser."""
     return inp + flow_matvec(
-        flow, absolute, membrane, bending, shears, div,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        flow,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
     )
 
 
@@ -524,8 +562,15 @@ def flow_matvec_sub(
 ) -> Tensor:
     """Return ``inp - L @ flow`` (fresh)."""
     return inp - flow_matvec(
-        flow, absolute, membrane, bending, shears, div,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        flow,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
     )
 
 
@@ -544,8 +589,15 @@ def flow_matvec_add_(
 ) -> Tensor:
     """In place ``inp += L @ flow``; returns ``inp``."""
     inp += flow_matvec(
-        flow, absolute, membrane, bending, shears, div,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        flow,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
     )
     return inp
 
@@ -565,8 +617,15 @@ def flow_matvec_sub_(
 ) -> Tensor:
     """In place ``inp -= L @ flow``; returns ``inp``."""
     inp -= flow_matvec(
-        flow, absolute, membrane, bending, shears, div,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        flow,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
     )
     return inp
 
@@ -585,9 +644,17 @@ def flow_diag_add(
 ) -> Tensor:
     """Return ``inp + diag(L)`` (fresh), shaped like ``inp``."""
     return inp + flow_diag(
-        inp.shape, absolute, membrane, bending, shears, div,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
-        dtype=inp.dtype, device=inp.device,
+        inp.shape,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
+        dtype=inp.dtype,
+        device=inp.device,
     )
 
 
@@ -605,9 +672,17 @@ def flow_diag_sub(
 ) -> Tensor:
     """Return ``inp - diag(L)`` (fresh), shaped like ``inp``."""
     return inp - flow_diag(
-        inp.shape, absolute, membrane, bending, shears, div,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
-        dtype=inp.dtype, device=inp.device,
+        inp.shape,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
+        dtype=inp.dtype,
+        device=inp.device,
     )
 
 
@@ -625,9 +700,17 @@ def flow_diag_add_(
 ) -> Tensor:
     """In place ``inp += diag(L)``; returns ``inp``."""
     inp += flow_diag(
-        inp.shape, absolute, membrane, bending, shears, div,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
-        dtype=inp.dtype, device=inp.device,
+        inp.shape,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
+        dtype=inp.dtype,
+        device=inp.device,
     )
     return inp
 
@@ -646,9 +729,17 @@ def flow_diag_sub_(
 ) -> Tensor:
     """In place ``inp -= diag(L)``; returns ``inp``."""
     inp -= flow_diag(
-        inp.shape, absolute, membrane, bending, shears, div,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
-        dtype=inp.dtype, device=inp.device,
+        inp.shape,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
+        dtype=inp.dtype,
+        device=inp.device,
     )
     return inp
 
@@ -674,9 +765,15 @@ def field_precond(
     """Apply the preconditioner ``(M + diag(R)) \\ vec`` (diff wrt vec)."""
     check_dtype(vec)
     diag = field_diag(
-        vec.shape, absolute, membrane, bending,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
-        dtype=vec.dtype, device=vec.device,
+        vec.shape,
+        absolute,
+        membrane,
+        bending,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
+        dtype=vec.dtype,
+        device=vec.device,
     )
     return sym_solve(mat, vec, diag)
 
@@ -696,103 +793,204 @@ def field_forward(
     check_dtype(vec)
     out = sym_matvec(mat, vec)
     out = out + field_matvec(
-        vec, absolute, membrane, bending,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        vec,
+        absolute,
+        membrane,
+        bending,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
     )
     return out
 
 
 def field_matvec_add(
-    inp: Tensor, field: Tensor, absolute=None, membrane=None, bending=None,
-    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+    inp: Tensor,
+    field: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
 ) -> Tensor:
     """Return ``inp + L @ field`` (fresh); ``L`` = field regulariser."""
     return inp + field_matvec(
-        field, absolute, membrane, bending,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        field,
+        absolute,
+        membrane,
+        bending,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
     )
 
 
 def field_matvec_sub(
-    inp: Tensor, field: Tensor, absolute=None, membrane=None, bending=None,
-    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+    inp: Tensor,
+    field: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
 ) -> Tensor:
     """Return ``inp - L @ field`` (fresh)."""
     return inp - field_matvec(
-        field, absolute, membrane, bending,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        field,
+        absolute,
+        membrane,
+        bending,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
     )
 
 
 def field_matvec_add_(
-    inp: Tensor, field: Tensor, absolute=None, membrane=None, bending=None,
-    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+    inp: Tensor,
+    field: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
 ) -> Tensor:
     """In place ``inp += L @ field``; returns ``inp``."""
     inp += field_matvec(
-        field, absolute, membrane, bending,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        field,
+        absolute,
+        membrane,
+        bending,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
     )
     return inp
 
 
 def field_matvec_sub_(
-    inp: Tensor, field: Tensor, absolute=None, membrane=None, bending=None,
-    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+    inp: Tensor,
+    field: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
 ) -> Tensor:
     """In place ``inp -= L @ field``; returns ``inp``."""
     inp -= field_matvec(
-        field, absolute, membrane, bending,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
+        field,
+        absolute,
+        membrane,
+        bending,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
     )
     return inp
 
 
 def field_diag_add(
-    inp: Tensor, absolute=None, membrane=None, bending=None,
-    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+    inp: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
 ) -> Tensor:
     """Return ``inp + diag(L)`` (fresh), shaped like ``inp``."""
     return inp + field_diag(
-        inp.shape, absolute, membrane, bending,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
-        dtype=inp.dtype, device=inp.device,
+        inp.shape,
+        absolute,
+        membrane,
+        bending,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
+        dtype=inp.dtype,
+        device=inp.device,
     )
 
 
 def field_diag_sub(
-    inp: Tensor, absolute=None, membrane=None, bending=None,
-    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+    inp: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
 ) -> Tensor:
     """Return ``inp - diag(L)`` (fresh), shaped like ``inp``."""
     return inp - field_diag(
-        inp.shape, absolute, membrane, bending,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
-        dtype=inp.dtype, device=inp.device,
+        inp.shape,
+        absolute,
+        membrane,
+        bending,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
+        dtype=inp.dtype,
+        device=inp.device,
     )
 
 
 def field_diag_add_(
-    inp: Tensor, absolute=None, membrane=None, bending=None,
-    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+    inp: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
 ) -> Tensor:
     """In place ``inp += diag(L)``; returns ``inp``."""
     inp += field_diag(
-        inp.shape, absolute, membrane, bending,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
-        dtype=inp.dtype, device=inp.device,
+        inp.shape,
+        absolute,
+        membrane,
+        bending,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
+        dtype=inp.dtype,
+        device=inp.device,
     )
     return inp
 
 
 def field_diag_sub_(
-    inp: Tensor, absolute=None, membrane=None, bending=None,
-    *, voxel_size=None, bound: int | str = "dct2", ndim: int = 1,
+    inp: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
 ) -> Tensor:
     """In place ``inp -= diag(L)``; returns ``inp``."""
     inp -= field_diag(
-        inp.shape, absolute, membrane, bending,
-        voxel_size=voxel_size, bound=bound, ndim=ndim,
-        dtype=inp.dtype, device=inp.device,
+        inp.shape,
+        absolute,
+        membrane,
+        bending,
+        voxel_size=voxel_size,
+        bound=bound,
+        ndim=ndim,
+        dtype=inp.dtype,
+        device=inp.device,
     )
     return inp
