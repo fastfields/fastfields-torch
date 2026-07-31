@@ -568,6 +568,7 @@ def test_flow_accumulate_variants():
     H, W = 5, 6
     flow = torch.randn(H, W, 2, dtype=torch.float64)
     base = torch.randn(H, W, 2, dtype=torch.float64)
+    before = base.clone()
     kw = dict(absolute=0.3, membrane=0.7, shears=1.0, div=0.5, ndim=2)
     L = fft.flow_matvec(flow, **kw)
     d = fft.flow_diag(base.shape, **kw)
@@ -575,13 +576,8 @@ def test_flow_accumulate_variants():
     assert torch.allclose(fft.flow_matvec_sub(base, flow, **kw), base - L)
     assert torch.allclose(fft.flow_diag_add(base, **kw), base + d)
     assert torch.allclose(fft.flow_diag_sub(base, **kw), base - d)
-    # in-place forms mutate and return the same tensor
-    a = base.clone()
-    assert fft.flow_matvec_add_(a, flow, **kw) is a
-    assert torch.allclose(a, base + L)
-    s = base.clone()
-    assert fft.flow_diag_sub_(s, **kw) is s
-    assert torch.allclose(s, base - d)
+    # the accumulate forms are functional: they never touch the input.
+    assert torch.equal(base, before)
 
 
 def test_flow_matvec_add_gradcheck():
@@ -621,6 +617,7 @@ def test_field_accumulate_variants():
     H, W, C = 5, 6, 2
     field = torch.randn(H, W, C, dtype=torch.float64)
     base = torch.randn(H, W, C, dtype=torch.float64)
+    before = base.clone()
     kw = dict(absolute=[0.3, 0.4], membrane=[0.7, 0.5], ndim=2)
     L = fft.field_matvec(field, **kw)
     d = fft.field_diag(base.shape, **kw)
@@ -628,6 +625,17 @@ def test_field_accumulate_variants():
     assert torch.allclose(fft.field_matvec_sub(base, field, **kw), base - L)
     assert torch.allclose(fft.field_diag_add(base, **kw), base + d)
     assert torch.allclose(fft.field_diag_sub(base, **kw), base - d)
-    a = base.clone()
-    assert fft.field_matvec_add_(a, field, **kw) is a
-    assert torch.allclose(a, base + L)
+    # the accumulate forms are functional: they never touch the input.
+    assert torch.equal(base, before)
+
+
+def test_no_inplace_ops_exposed():
+    # Policy (meta-repo API_CONTRACT.md, "In-place policy"): the torch backend
+    # ships a functional-only surface, because in-place mutation does not
+    # compose with autograd -- `x += ...` on a leaf that requires grad raises
+    # outright. numpy/cupy keep their `_`-suffixed set; torch has none. This
+    # mirrors fastfields' test_conformance.py so a regression is caught here.
+    offenders = [
+        n for n in dir(fft) if n.endswith("_") and not n.startswith("_")
+    ]
+    assert not offenders, f"torch exposes in-place ops: {offenders}"
