@@ -460,8 +460,13 @@ def test_flow_matvec_lame_gradcheck(bound):
     v = torch.randn(5, 6, 2, dtype=torch.float64, requires_grad=True)
     assert torch.autograd.gradcheck(
         lambda z: fft.flow_matvec(
-            z, absolute=0.2, membrane=0.5, shears=1.3, div=0.7,
-            ndim=2, bound=bound,
+            z,
+            absolute=0.2,
+            membrane=0.5,
+            shears=1.3,
+            div=0.7,
+            ndim=2,
+            bound=bound,
         ),
         (v,),
         eps=1e-6,
@@ -481,16 +486,26 @@ def test_field_diag_absolute():
         ({"membrane": 1.0}, False, 3),
         ({"bending": 1.0}, False, 5),
         ({"shears": 1.3, "div": 0.7}, True, 3),
-        ({"absolute": 0.3, "membrane": 0.5, "bending": 0.4,
-          "shears": 1.3, "div": 0.7}, True, 5),
+        (
+            {
+                "absolute": 0.3,
+                "membrane": 0.5,
+                "bending": 0.4,
+                "shears": 1.3,
+                "div": 0.7,
+            },
+            True,
+            5,
+        ),
     ],
 )
 def test_flow_kernel_is_matvec_impulse_response(kw, is_matrix, width):
     # The materialised stencil equals flow_matvec's impulse response interior.
     C = 2
     K = fft.flow_kernel(2, **kw)
-    assert tuple(K.shape) == ((width, width, C, C) if is_matrix
-                              else (width, width, C))
+    assert tuple(K.shape) == (
+        (width, width, C, C) if is_matrix else (width, width, C)
+    )
     kd = width
     N, cc, half = 2 * kd + 1, kd, kd // 2
     for j0 in range(C):
@@ -501,10 +516,16 @@ def test_flow_kernel_is_matvec_impulse_response(kw, is_matrix, width):
             for b in range(kd):
                 for i in range(C):
                     got = o[cc + a - half, cc + b - half, i]
-                    kern = (K[a, b, i, j0] if is_matrix
-                            else (K[a, b, i] if i == j0 else 0.0))
-                    assert torch.allclose(got, torch.as_tensor(
-                        kern, dtype=torch.float64), atol=1e-10)
+                    kern = (
+                        K[a, b, i, j0]
+                        if is_matrix
+                        else (K[a, b, i] if i == j0 else 0.0)
+                    )
+                    assert torch.allclose(
+                        got,
+                        torch.as_tensor(kern, dtype=torch.float64),
+                        atol=1e-10,
+                    )
 
 
 def _flow_hessian_2d(H, W, C=2):
@@ -592,7 +613,9 @@ def test_flow_matvec_add_gradcheck():
     kw = dict(absolute=0.2, membrane=0.5, shears=1.3, div=0.7, ndim=2)
     assert torch.autograd.gradcheck(
         lambda p, f: fft.flow_matvec_add(p, f, **kw),
-        (base, flow), eps=1e-6, atol=1e-4,
+        (base, flow),
+        eps=1e-6,
+        atol=1e-4,
     )
 
 
@@ -638,8 +661,11 @@ def test_field_accumulate_variants():
     [
         (1, 1, dict(absolute=[2.5, 1.5])),
         (2, 3, dict(absolute=[0.3, 0.4], membrane=[1.0, 0.7])),
-        (3, 5, dict(absolute=[0.3, 0.4], membrane=[0.5, 0.6],
-                    bending=[1.0, 0.8])),
+        (
+            3,
+            5,
+            dict(absolute=[0.3, 0.4], membrane=[0.5, 0.6], bending=[1.0, 0.8]),
+        ),
     ],
 )
 def test_field_kernel_is_matvec_impulse_response(order, width, kw):
@@ -656,10 +682,16 @@ def test_field_kernel_is_matvec_impulse_response(order, width, kw):
             for b in range(kd):
                 for c in range(C):
                     got = o[cc + a - half, cc + b - half, c]
-                    kern = K[a, b, c] if c == c0 else torch.tensor(
-                        0.0, dtype=torch.float64)
-                    assert torch.allclose(got, torch.as_tensor(
-                        kern, dtype=torch.float64), atol=1e-10)
+                    kern = (
+                        K[a, b, c]
+                        if c == c0
+                        else torch.tensor(0.0, dtype=torch.float64)
+                    )
+                    assert torch.allclose(
+                        got,
+                        torch.as_tensor(kern, dtype=torch.float64),
+                        atol=1e-10,
+                    )
 
 
 def test_field_kernel_channels_inference():
