@@ -851,3 +851,142 @@ def test_field_kernel_channels_inference():
     k = fft.field_kernel(2, absolute=[1.0, 2.0, 3.0])
     assert tuple(k.shape) == (1, 1, 3)
     assert tuple(fft.field_kernel(1, absolute=2.0, channels=4).shape) == (1, 4)
+
+
+# --------------------------------------------------------------------------- #
+# In-place accumulate ops: autograd safety                                    #
+#                                                                             #
+# These ops are `acc <- acc (+/-) g(...)`, i.e. additive in the tensor they   #
+# mutate, so d/d(acc) = I and no pre-mutation value is needed by backward.    #
+# The tests below verify that property rather than assuming it.               #
+# See API_CONTRACT.md, "In-place policy".                                     #
+# --------------------------------------------------------------------------- #
+
+
+_ACC_KW_FIELD = dict(absolute=[0.3, 0.4], membrane=[0.7, 0.5], ndim=2)
+_ACC_KW_FLOW = dict(absolute=0.3, membrane=0.7, shears=1.0, div=0.5, ndim=2)
+
+
+def test_inplace_accumulate_saves_nothing_for_backward():
+    """The autograd Functions must not stash the mutated tensor.
+
+    This is the structural form of the safety argument: if nothing is saved,
+    mutating the buffer cannot invalidate anything backward needs.
+    """
+    H, W, C = 4, 5, 2
+    field = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    base = torch.zeros(H, W, C, dtype=torch.float64, requires_grad=True)
+    out = fft.field_matvec_add_(base * 1.0, field, **_ACC_KW_FIELD)
+    # grad_fn is our accumulate Function; it should hold no saved tensors.
+    assert out.grad_fn is not None
+    assert not getattr(out.grad_fn, "saved_tensors", ())
+
+
+def test_inplace_accumulate_grad_wrt_accumulator_is_identity():
+    """d(acc + L@x)/d(acc) == I, so the incoming gradient passes through."""
+    H, W, C = 4, 5, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    base = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    out = fft.field_matvec_add_(base * 1.0, field, **_ACC_KW_FIELD)
+    g = torch.randn_like(out)
+    (grad,) = torch.autograd.grad(out, base, g)
+    assert torch.allclose(grad, g, atol=1e-12)
+
+
+def test_inplace_accumulate_sub_grad_wrt_accumulator_is_identity():
+    H, W, C = 4, 5, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    base = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    out = fft.field_matvec_sub_(base * 1.0, field, **_ACC_KW_FIELD)
+    g = torch.randn_like(out)
+    (grad,) = torch.autograd.grad(out, base, g)
+    assert torch.allclose(grad, g, atol=1e-12)
+
+
+@pytest.mark.parametrize("fn_name", ["field_matvec_add_", "field_matvec_sub_"])
+def test_field_matvec_inplace_gradcheck(fn_name):
+    """gradcheck through the genuinely in-place op (non-leaf accumulator)."""
+    H, W, C = 3, 4, 2
+    base = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    field = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    fn = getattr(fft, fn_name)
+
+    def run(p, f):
+        # `p * 1.0` makes a non-leaf so torch allows the in-place mutation,
+        # exactly as one would do with `Tensor.add_`.
+        return fn(p * 1.0, f, **_ACC_KW_FIELD)
+
+    assert torch.autograd.gradcheck(run, (base, field), eps=1e-6, atol=1e-4)
+
+
+@pytest.mark.parametrize("fn_name", ["flow_matvec_add_", "flow_matvec_sub_"])
+def test_flow_matvec_inplace_gradcheck(fn_name):
+    H, W = 3, 4
+    base = torch.randn(H, W, 2, dtype=torch.float64, requires_grad=True)
+    flow = torch.randn(H, W, 2, dtype=torch.float64, requires_grad=True)
+    fn = getattr(fft, fn_name)
+
+    def run(p, f):
+        return fn(p * 1.0, f, **_ACC_KW_FLOW)
+
+    assert torch.autograd.gradcheck(run, (base, flow), eps=1e-6, atol=1e-4)
+
+
+@pytest.mark.parametrize("fn_name", ["field_diag_add_", "field_diag_sub_"])
+def test_field_diag_inplace_gradcheck(fn_name):
+    H, W, C = 3, 4, 2
+    base = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    fn = getattr(fft, fn_name)
+    assert torch.autograd.gradcheck(
+        lambda p: fn(p * 1.0, **_ACC_KW_FIELD), (base,), eps=1e-6, atol=1e-4
+    )
+
+
+def test_inplace_accumulate_rejects_leaf_requiring_grad():
+    """Torch's ordinary leaf rule still applies -- same as ``Tensor.add_``."""
+    H, W, C = 3, 4, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    leaf = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    with pytest.raises(RuntimeError, match="leaf Variable"):
+        fft.field_matvec_add_(leaf, field, **_ACC_KW_FIELD)
+    # ... and the documented workaround (the out-of-place spelling) works.
+    out = fft.field_matvec_add(leaf, field, **_ACC_KW_FIELD)
+    assert out.requires_grad
+
+
+def test_inplace_accumulate_bumps_version_counter():
+    """``ctx.mark_dirty`` must fire so a stale save raises, not lies."""
+    H, W, C = 3, 4, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    x = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    y = x * 1.0
+    v0 = y._version
+    fft.field_matvec_add_(y, field, **_ACC_KW_FIELD)
+    assert y._version > v0
+
+
+def test_out_of_place_accumulate_does_not_mutate_input():
+    """Out-of-place must clone, never touch the caller's tensor."""
+    H, W, C = 4, 5, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    base = torch.randn(H, W, C, dtype=torch.float64)
+    before = base.clone()
+    for fn in (fft.field_matvec_add, fft.field_matvec_sub):
+        out = fn(base, field, **_ACC_KW_FIELD)
+        assert torch.equal(base, before)
+        assert out is not base
+    for fn in (fft.field_diag_add, fft.field_diag_sub):
+        out = fn(base, **_ACC_KW_FIELD)
+        assert torch.equal(base, before)
+        assert out is not base
+
+
+def test_inplace_and_out_of_place_agree():
+    """One kernel behind both spellings -> bitwise-equal results."""
+    H, W, C = 4, 5, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    base = torch.randn(H, W, C, dtype=torch.float64)
+    a = base.clone()
+    fft.field_matvec_add_(a, field, **_ACC_KW_FIELD)
+    b = fft.field_matvec_add(base, field, **_ACC_KW_FIELD)
+    assert torch.equal(a, b)
