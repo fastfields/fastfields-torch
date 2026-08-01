@@ -24,28 +24,28 @@ from ._util import check_dtype, stream_ptr
 
 __all__ = [
     "field_matvec",
-    "field_matvec_add",
-    "field_matvec_add_",
-    "field_matvec_sub",
-    "field_matvec_sub_",
+    "field_addmatvec",
+    "field_addmatvec_",
+    "field_submatvec",
+    "field_submatvec_",
     "field_diag",
-    "field_diag_add",
-    "field_diag_add_",
-    "field_diag_sub",
-    "field_diag_sub_",
+    "field_adddiag",
+    "field_adddiag_",
+    "field_subdiag",
+    "field_subdiag_",
     "field_kernel",
     "field_precond",
     "field_forward",
     "flow_matvec",
-    "flow_matvec_add",
-    "flow_matvec_add_",
-    "flow_matvec_sub",
-    "flow_matvec_sub_",
+    "flow_addmatvec",
+    "flow_addmatvec_",
+    "flow_submatvec",
+    "flow_submatvec_",
     "flow_diag",
-    "flow_diag_add",
-    "flow_diag_add_",
-    "flow_diag_sub",
-    "flow_diag_sub_",
+    "flow_adddiag",
+    "flow_adddiag_",
+    "flow_subdiag",
+    "flow_subdiag_",
     "flow_kernel",
     "flow_relax",
     "flow_precond",
@@ -181,6 +181,280 @@ class _FlowMatvec(torch.autograd.Function):
                 stream=stream_ptr(ginp),
             )
         return ginp, None, None, None, None, None, None, None, None
+
+
+# ---------------------------------------------------------------------------
+# In-place accumulate ops (`out (+/-)= ...`)
+# ---------------------------------------------------------------------------
+#
+# These wrap the *in-place-only* C primitives `ff::{field,flow}_{matvec,diag}_
+# {add,sub}_`, which read-modify-write the caller's buffer. The out-of-place
+# spelling here is a `.clone()` followed by that very same primitive --
+# there is only one kernel, exactly as in jitfields.
+#
+# Autograd safety (see API_CONTRACT.md "In-place policy"):
+#
+#   The operation is `acc <- acc (+/-) g(...)`, i.e. *additive* in the
+#   tensor it mutates. Therefore
+#       d(acc +/- g)/d(acc) = I          (identity -- independent of acc)
+#       d(acc +/- g)/d(inp) = +/- L      (L linear & self-adjoint)
+#   Neither partial derivative depends on the *pre-mutation* value of `acc`, so
+#   nothing has to be saved for backward and overwriting `acc` destroys no
+#   information the backward pass needs. This is precisely why PyTorch itself
+#   ships `Tensor.add_` as a fully autograd-safe in-place op.
+#
+#   Note what is (deliberately) absent below: no `ctx.save_for_backward`. That
+#   absence *is* the safety argument, structurally. What IS required is
+#   `ctx.mark_dirty(acc)`, which bumps `acc`'s version counter so that if any
+#   other op had saved `acc` for *its* backward, autograd raises instead of
+#   silently returning a wrong gradient.
+#
+#   Torch's ordinary leaf rule still applies: a leaf tensor with
+#   `requires_grad=True` cannot be mutated in place (identically to
+#   `x.add_(y)`); use the out-of-place spelling for those.
+
+
+class _FieldMatvecAcc(torch.autograd.Function):
+    """``acc (+/-)= L @ inp`` in place; diff'able wrt ``acc``/``inp``."""
+
+    @staticmethod
+    def forward(ctx, acc, inp, voxel_size, absolute, membrane, bending,
+                bound, ndim, sub):
+        fn = _fb.field_submatvec_ if sub else _fb.field_addmatvec_
+        fn(
+            acc,
+            inp,
+            voxel_size=voxel_size,
+            absolute=absolute,
+            membrane=membrane,
+            bending=bending,
+            bound=bound,
+            ndim=ndim,
+            stream=stream_ptr(acc),
+        )
+        # Required for in-place autograd bookkeeping (version counter).
+        ctx.mark_dirty(acc)
+        ctx.args = (voxel_size, absolute, membrane, bending, bound, ndim)
+        ctx.sub = sub
+        return acc
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        # d/d(acc) is the identity, so the incoming gradient passes straight
+        # through -- no pre-mutation value of `acc` is involved.
+        gacc = grad_out if ctx.needs_input_grad[0] else None
+
+        ginp = None
+        if ctx.needs_input_grad[1]:
+            vs, ab, mem, ben, bnd, ndim = ctx.args
+            ginp = grad_out.new_zeros(grad_out.shape)
+            # L is self-adjoint, so the adjoint of `inp -> L @ inp` is itself.
+            _fb.field_matvec(
+                ginp,
+                grad_out.contiguous(),
+                voxel_size=vs,
+                absolute=ab,
+                membrane=mem,
+                bending=ben,
+                bound=bnd,
+                ndim=ndim,
+                stream=stream_ptr(ginp),
+            )
+            if ctx.sub:
+                ginp = ginp.neg()
+
+        return gacc, ginp, None, None, None, None, None, None, None
+
+
+class _FlowMatvecAcc(torch.autograd.Function):
+    """``acc (+/-)= L @ inp`` in place, flow; diff'able wrt acc/inp."""
+
+    @staticmethod
+    def forward(ctx, acc, inp, voxel_size, absolute, membrane, bending,
+                shears, div, bound, ndim, sub):
+        fn = _fb.flow_submatvec_ if sub else _fb.flow_addmatvec_
+        fn(
+            acc,
+            inp,
+            voxel_size=voxel_size,
+            absolute=absolute,
+            membrane=membrane,
+            bending=bending,
+            shears=shears,
+            div=div,
+            bound=bound,
+            ndim=ndim,
+            stream=stream_ptr(acc),
+        )
+        ctx.mark_dirty(acc)
+        ctx.args = (voxel_size, absolute, membrane, bending, shears, div,
+                    bound, ndim)
+        ctx.sub = sub
+        return acc
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        gacc = grad_out if ctx.needs_input_grad[0] else None
+
+        ginp = None
+        if ctx.needs_input_grad[1]:
+            vs, ab, mem, ben, sh, dv, bnd, ndim = ctx.args
+            ginp = grad_out.new_zeros(grad_out.shape)
+            _fb.flow_matvec(
+                ginp,
+                grad_out.contiguous(),
+                voxel_size=vs,
+                absolute=ab,
+                membrane=mem,
+                bending=ben,
+                shears=sh,
+                div=dv,
+                bound=bnd,
+                ndim=ndim,
+                stream=stream_ptr(ginp),
+            )
+            if ctx.sub:
+                ginp = ginp.neg()
+
+        return (gacc, ginp, None, None, None, None, None, None, None,
+                None, None)
+
+
+class _FieldDiagAcc(torch.autograd.Function):
+    """``acc (+/-)= diag(L)`` in place; differentiable wrt ``acc``.
+
+    ``diag(L)`` is a function of the shape and the penalty weights only -- it
+    has no tensor input at all -- so the only gradient is the identity
+    pass-through wrt ``acc``.
+    """
+
+    @staticmethod
+    def forward(ctx, acc, voxel_size, absolute, membrane, bending, bound,
+                ndim, sub):
+        fn = _fb.field_subdiag_ if sub else _fb.field_adddiag_
+        fn(
+            acc,
+            voxel_size=voxel_size,
+            absolute=absolute,
+            membrane=membrane,
+            bending=bending,
+            bound=bound,
+            ndim=ndim,
+            stream=stream_ptr(acc),
+        )
+        ctx.mark_dirty(acc)
+        return acc
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        gacc = grad_out if ctx.needs_input_grad[0] else None
+        return gacc, None, None, None, None, None, None, None
+
+
+class _FlowDiagAcc(torch.autograd.Function):
+    """``acc (+/-)= diag(L)`` in place (flow); differentiable wrt ``acc``."""
+
+    @staticmethod
+    def forward(ctx, acc, voxel_size, absolute, membrane, bending, shears,
+                div, bound, ndim, sub):
+        fn = _fb.flow_subdiag_ if sub else _fb.flow_adddiag_
+        fn(
+            acc,
+            voxel_size=voxel_size,
+            absolute=absolute,
+            membrane=membrane,
+            bending=bending,
+            shears=shears,
+            div=div,
+            bound=bound,
+            ndim=ndim,
+            stream=stream_ptr(acc),
+        )
+        ctx.mark_dirty(acc)
+        return acc
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        gacc = grad_out if ctx.needs_input_grad[0] else None
+        return gacc, None, None, None, None, None, None, None, None, None
+
+
+def _field_matvec_acc(inp, field, absolute, membrane, bending, voxel_size,
+                      bound, ndim, sub, inplace):
+    """Single entry point behind the four field-matvec accumulate spellings."""
+    check_dtype(inp)
+    check_dtype(field)
+    channels = field.shape[-1]
+    acc = inp if inplace else inp.clone()
+    return _FieldMatvecAcc.apply(
+        acc,
+        field,
+        _voxel(voxel_size, ndim),
+        _per_channel(absolute, channels, "absolute"),
+        _per_channel(membrane, channels, "membrane"),
+        _per_channel(bending, channels, "bending"),
+        as_bound(bound),
+        ndim,
+        sub,
+    )
+
+
+def _flow_matvec_acc(inp, flow, absolute, membrane, bending, shears, div,
+                     voxel_size, bound, ndim, sub, inplace):
+    """Single entry point behind the four flow-matvec accumulate spellings."""
+    check_dtype(inp)
+    check_dtype(flow)
+    acc = inp if inplace else inp.clone()
+    return _FlowMatvecAcc.apply(
+        acc,
+        flow,
+        _voxel(voxel_size, ndim),
+        float(absolute),
+        float(membrane),
+        float(bending),
+        float(shears),
+        float(div),
+        as_bound(bound),
+        ndim,
+        sub,
+    )
+
+
+def _field_diag_acc(inp, absolute, membrane, bending, voxel_size, bound,
+                    ndim, sub, inplace):
+    """Single entry point behind the four field-diag accumulate spellings."""
+    check_dtype(inp)
+    channels = inp.shape[-1]
+    acc = inp if inplace else inp.clone()
+    return _FieldDiagAcc.apply(
+        acc,
+        _voxel(voxel_size, ndim),
+        _per_channel(absolute, channels, "absolute"),
+        _per_channel(membrane, channels, "membrane"),
+        _per_channel(bending, channels, "bending"),
+        as_bound(bound),
+        ndim,
+        sub,
+    )
+
+
+def _flow_diag_acc(inp, absolute, membrane, bending, shears, div, voxel_size,
+                   bound, ndim, sub, inplace):
+    """Single entry point behind the four flow-diag accumulate spellings."""
+    check_dtype(inp)
+    acc = inp if inplace else inp.clone()
+    return _FlowDiagAcc.apply(
+        acc,
+        _voxel(voxel_size, ndim),
+        float(absolute),
+        float(membrane),
+        float(bending),
+        float(shears),
+        float(div),
+        as_bound(bound),
+        ndim,
+        sub,
+    )
 
 
 def field_matvec(
@@ -520,7 +794,7 @@ def flow_forward(
 # augmented assignment (``add_``/``sub_``), intended for non-autograd use.
 
 
-def flow_matvec_add(
+def flow_addmatvec(
     inp: Tensor,
     flow: Tensor,
     absolute: float = 0.0,
@@ -533,21 +807,19 @@ def flow_matvec_add(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """Return ``inp + L @ flow`` (fresh); ``L`` is the flow regulariser."""
-    return inp + flow_matvec(
-        flow,
-        absolute,
-        membrane,
-        bending,
-        shears,
-        div,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
+    """Return ``inp + L @ flow`` as a **new** tensor.
+
+    Clones ``inp`` and applies the in-place accumulate primitive to the
+    clone -- one kernel, no temporary for the regulariser result.
+    Differentiable wrt both ``inp`` and ``flow``.
+    """
+    return _flow_matvec_acc(
+        inp, flow, absolute, membrane, bending, shears, div,
+        voxel_size, bound, ndim, sub=False, inplace=False,
     )
 
 
-def flow_matvec_sub(
+def flow_submatvec(
     inp: Tensor,
     flow: Tensor,
     absolute: float = 0.0,
@@ -560,21 +832,19 @@ def flow_matvec_sub(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """Return ``inp - L @ flow`` (fresh)."""
-    return inp - flow_matvec(
-        flow,
-        absolute,
-        membrane,
-        bending,
-        shears,
-        div,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
+    """Return ``inp - L @ flow`` as a **new** tensor.
+
+    Clones ``inp`` and applies the in-place accumulate primitive to the
+    clone -- one kernel, no temporary for the regulariser result.
+    Differentiable wrt both ``inp`` and ``flow``.
+    """
+    return _flow_matvec_acc(
+        inp, flow, absolute, membrane, bending, shears, div,
+        voxel_size, bound, ndim, sub=True, inplace=False,
     )
 
 
-def flow_matvec_add_(
+def flow_addmatvec_(
     inp: Tensor,
     flow: Tensor,
     absolute: float = 0.0,
@@ -587,22 +857,20 @@ def flow_matvec_add_(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """In place ``inp += L @ flow``; returns ``inp``."""
-    inp += flow_matvec(
-        flow,
-        absolute,
-        membrane,
-        bending,
-        shears,
-        div,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
+    """In place ``inp += L @ flow``; returns ``inp``.
+
+    Calls the fused in-place C primitive directly. Autograd-safe (the op
+    is additive in ``inp``, so backward needs no pre-mutation value); a
+    leaf tensor requiring grad still cannot be mutated, as with
+    ``Tensor.add_``.
+    """
+    return _flow_matvec_acc(
+        inp, flow, absolute, membrane, bending, shears, div,
+        voxel_size, bound, ndim, sub=False, inplace=True,
     )
-    return inp
 
 
-def flow_matvec_sub_(
+def flow_submatvec_(
     inp: Tensor,
     flow: Tensor,
     absolute: float = 0.0,
@@ -615,22 +883,20 @@ def flow_matvec_sub_(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """In place ``inp -= L @ flow``; returns ``inp``."""
-    inp -= flow_matvec(
-        flow,
-        absolute,
-        membrane,
-        bending,
-        shears,
-        div,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
+    """In place ``inp -= L @ flow``; returns ``inp``.
+
+    Calls the fused in-place C primitive directly. Autograd-safe (the op
+    is additive in ``inp``, so backward needs no pre-mutation value); a
+    leaf tensor requiring grad still cannot be mutated, as with
+    ``Tensor.add_``.
+    """
+    return _flow_matvec_acc(
+        inp, flow, absolute, membrane, bending, shears, div,
+        voxel_size, bound, ndim, sub=True, inplace=True,
     )
-    return inp
 
 
-def flow_diag_add(
+def flow_adddiag(
     inp: Tensor,
     absolute: float = 0.0,
     membrane: float = 0.0,
@@ -642,23 +908,18 @@ def flow_diag_add(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """Return ``inp + diag(L)`` (fresh), shaped like ``inp``."""
-    return inp + flow_diag(
-        inp.shape,
-        absolute,
-        membrane,
-        bending,
-        shears,
-        div,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
-        dtype=inp.dtype,
-        device=inp.device,
+    """Return ``inp + diag(L)`` as a **new** tensor, shaped like ``inp``.
+
+    Clones ``inp`` and applies the in-place accumulate primitive to the
+    clone. Differentiable wrt ``inp``.
+    """
+    return _flow_diag_acc(
+        inp, absolute, membrane, bending, shears, div,
+        voxel_size, bound, ndim, sub=False, inplace=False,
     )
 
 
-def flow_diag_sub(
+def flow_subdiag(
     inp: Tensor,
     absolute: float = 0.0,
     membrane: float = 0.0,
@@ -670,23 +931,18 @@ def flow_diag_sub(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """Return ``inp - diag(L)`` (fresh), shaped like ``inp``."""
-    return inp - flow_diag(
-        inp.shape,
-        absolute,
-        membrane,
-        bending,
-        shears,
-        div,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
-        dtype=inp.dtype,
-        device=inp.device,
+    """Return ``inp - diag(L)`` as a **new** tensor, shaped like ``inp``.
+
+    Clones ``inp`` and applies the in-place accumulate primitive to the
+    clone. Differentiable wrt ``inp``.
+    """
+    return _flow_diag_acc(
+        inp, absolute, membrane, bending, shears, div,
+        voxel_size, bound, ndim, sub=True, inplace=False,
     )
 
 
-def flow_diag_add_(
+def flow_adddiag_(
     inp: Tensor,
     absolute: float = 0.0,
     membrane: float = 0.0,
@@ -698,24 +954,19 @@ def flow_diag_add_(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """In place ``inp += diag(L)``; returns ``inp``."""
-    inp += flow_diag(
-        inp.shape,
-        absolute,
-        membrane,
-        bending,
-        shears,
-        div,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
-        dtype=inp.dtype,
-        device=inp.device,
+    """In place ``inp += diag(L)``; returns ``inp``.
+
+    Calls the fused in-place C primitive directly. Autograd-safe (the op
+    is additive in ``inp``); a leaf tensor requiring grad still cannot be
+    mutated, as with ``Tensor.add_``.
+    """
+    return _flow_diag_acc(
+        inp, absolute, membrane, bending, shears, div,
+        voxel_size, bound, ndim, sub=False, inplace=True,
     )
-    return inp
 
 
-def flow_diag_sub_(
+def flow_subdiag_(
     inp: Tensor,
     absolute: float = 0.0,
     membrane: float = 0.0,
@@ -727,28 +978,16 @@ def flow_diag_sub_(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """In place ``inp -= diag(L)``; returns ``inp``."""
-    inp -= flow_diag(
-        inp.shape,
-        absolute,
-        membrane,
-        bending,
-        shears,
-        div,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
-        dtype=inp.dtype,
-        device=inp.device,
+    """In place ``inp -= diag(L)``; returns ``inp``.
+
+    Calls the fused in-place C primitive directly. Autograd-safe (the op
+    is additive in ``inp``); a leaf tensor requiring grad still cannot be
+    mutated, as with ``Tensor.add_``.
+    """
+    return _flow_diag_acc(
+        inp, absolute, membrane, bending, shears, div,
+        voxel_size, bound, ndim, sub=True, inplace=True,
     )
-    return inp
-
-
-# --- field: precond / forward / accumulate -------------------------------
-#
-# Field analogues of the flow helpers. The fresh forms compose the autograd
-# field_matvec / sym ops, so they stay differentiable; the in-place forms use
-# augmented assignment. Pure Python compositions -- no new kernel.
 
 
 def field_precond(
@@ -804,7 +1043,7 @@ def field_forward(
     return out
 
 
-def field_matvec_add(
+def field_addmatvec(
     inp: Tensor,
     field: Tensor,
     absolute=None,
@@ -815,19 +1054,19 @@ def field_matvec_add(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """Return ``inp + L @ field`` (fresh); ``L`` = field regulariser."""
-    return inp + field_matvec(
-        field,
-        absolute,
-        membrane,
-        bending,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
+    """Return ``inp + L @ field`` as a **new** tensor.
+
+    Clones ``inp`` and applies the in-place accumulate primitive to the
+    clone -- one kernel, no temporary for the regulariser result.
+    Differentiable wrt both ``inp`` and ``field``.
+    """
+    return _field_matvec_acc(
+        inp, field, absolute, membrane, bending,
+        voxel_size, bound, ndim, sub=False, inplace=False,
     )
 
 
-def field_matvec_sub(
+def field_submatvec(
     inp: Tensor,
     field: Tensor,
     absolute=None,
@@ -838,19 +1077,19 @@ def field_matvec_sub(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """Return ``inp - L @ field`` (fresh)."""
-    return inp - field_matvec(
-        field,
-        absolute,
-        membrane,
-        bending,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
+    """Return ``inp - L @ field`` as a **new** tensor.
+
+    Clones ``inp`` and applies the in-place accumulate primitive to the
+    clone -- one kernel, no temporary for the regulariser result.
+    Differentiable wrt both ``inp`` and ``field``.
+    """
+    return _field_matvec_acc(
+        inp, field, absolute, membrane, bending,
+        voxel_size, bound, ndim, sub=True, inplace=False,
     )
 
 
-def field_matvec_add_(
+def field_addmatvec_(
     inp: Tensor,
     field: Tensor,
     absolute=None,
@@ -861,20 +1100,20 @@ def field_matvec_add_(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """In place ``inp += L @ field``; returns ``inp``."""
-    inp += field_matvec(
-        field,
-        absolute,
-        membrane,
-        bending,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
+    """In place ``inp += L @ field``; returns ``inp``.
+
+    Calls the fused in-place C primitive directly. Autograd-safe (the op
+    is additive in ``inp``, so backward needs no pre-mutation value); a
+    leaf tensor requiring grad still cannot be mutated, as with
+    ``Tensor.add_``.
+    """
+    return _field_matvec_acc(
+        inp, field, absolute, membrane, bending,
+        voxel_size, bound, ndim, sub=False, inplace=True,
     )
-    return inp
 
 
-def field_matvec_sub_(
+def field_submatvec_(
     inp: Tensor,
     field: Tensor,
     absolute=None,
@@ -885,20 +1124,20 @@ def field_matvec_sub_(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """In place ``inp -= L @ field``; returns ``inp``."""
-    inp -= field_matvec(
-        field,
-        absolute,
-        membrane,
-        bending,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
+    """In place ``inp -= L @ field``; returns ``inp``.
+
+    Calls the fused in-place C primitive directly. Autograd-safe (the op
+    is additive in ``inp``, so backward needs no pre-mutation value); a
+    leaf tensor requiring grad still cannot be mutated, as with
+    ``Tensor.add_``.
+    """
+    return _field_matvec_acc(
+        inp, field, absolute, membrane, bending,
+        voxel_size, bound, ndim, sub=True, inplace=True,
     )
-    return inp
 
 
-def field_diag_add(
+def field_adddiag(
     inp: Tensor,
     absolute=None,
     membrane=None,
@@ -908,21 +1147,18 @@ def field_diag_add(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """Return ``inp + diag(L)`` (fresh), shaped like ``inp``."""
-    return inp + field_diag(
-        inp.shape,
-        absolute,
-        membrane,
-        bending,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
-        dtype=inp.dtype,
-        device=inp.device,
+    """Return ``inp + diag(L)`` as a **new** tensor, shaped like ``inp``.
+
+    Clones ``inp`` and applies the in-place accumulate primitive to the
+    clone. Differentiable wrt ``inp``.
+    """
+    return _field_diag_acc(
+        inp, absolute, membrane, bending,
+        voxel_size, bound, ndim, sub=False, inplace=False,
     )
 
 
-def field_diag_sub(
+def field_subdiag(
     inp: Tensor,
     absolute=None,
     membrane=None,
@@ -932,21 +1168,18 @@ def field_diag_sub(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """Return ``inp - diag(L)`` (fresh), shaped like ``inp``."""
-    return inp - field_diag(
-        inp.shape,
-        absolute,
-        membrane,
-        bending,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
-        dtype=inp.dtype,
-        device=inp.device,
+    """Return ``inp - diag(L)`` as a **new** tensor, shaped like ``inp``.
+
+    Clones ``inp`` and applies the in-place accumulate primitive to the
+    clone. Differentiable wrt ``inp``.
+    """
+    return _field_diag_acc(
+        inp, absolute, membrane, bending,
+        voxel_size, bound, ndim, sub=True, inplace=False,
     )
 
 
-def field_diag_add_(
+def field_adddiag_(
     inp: Tensor,
     absolute=None,
     membrane=None,
@@ -956,22 +1189,19 @@ def field_diag_add_(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """In place ``inp += diag(L)``; returns ``inp``."""
-    inp += field_diag(
-        inp.shape,
-        absolute,
-        membrane,
-        bending,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
-        dtype=inp.dtype,
-        device=inp.device,
+    """In place ``inp += diag(L)``; returns ``inp``.
+
+    Calls the fused in-place C primitive directly. Autograd-safe (the op
+    is additive in ``inp``); a leaf tensor requiring grad still cannot be
+    mutated, as with ``Tensor.add_``.
+    """
+    return _field_diag_acc(
+        inp, absolute, membrane, bending,
+        voxel_size, bound, ndim, sub=False, inplace=True,
     )
-    return inp
 
 
-def field_diag_sub_(
+def field_subdiag_(
     inp: Tensor,
     absolute=None,
     membrane=None,
@@ -981,16 +1211,13 @@ def field_diag_sub_(
     bound: int | str = "dct2",
     ndim: int = 1,
 ) -> Tensor:
-    """In place ``inp -= diag(L)``; returns ``inp``."""
-    inp -= field_diag(
-        inp.shape,
-        absolute,
-        membrane,
-        bending,
-        voxel_size=voxel_size,
-        bound=bound,
-        ndim=ndim,
-        dtype=inp.dtype,
-        device=inp.device,
+    """In place ``inp -= diag(L)``; returns ``inp``.
+
+    Calls the fused in-place C primitive directly. Autograd-safe (the op
+    is additive in ``inp``); a leaf tensor requiring grad still cannot be
+    mutated, as with ``Tensor.add_``.
+    """
+    return _field_diag_acc(
+        inp, absolute, membrane, bending,
+        voxel_size, bound, ndim, sub=True, inplace=True,
     )
-    return inp

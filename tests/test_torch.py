@@ -745,27 +745,27 @@ def test_flow_accumulate_variants():
     kw = dict(absolute=0.3, membrane=0.7, shears=1.0, div=0.5, ndim=2)
     L = fft.flow_matvec(flow, **kw)
     d = fft.flow_diag(base.shape, **kw)
-    assert torch.allclose(fft.flow_matvec_add(base, flow, **kw), base + L)
-    assert torch.allclose(fft.flow_matvec_sub(base, flow, **kw), base - L)
-    assert torch.allclose(fft.flow_diag_add(base, **kw), base + d)
-    assert torch.allclose(fft.flow_diag_sub(base, **kw), base - d)
+    assert torch.allclose(fft.flow_addmatvec(base, flow, **kw), base + L)
+    assert torch.allclose(fft.flow_submatvec(base, flow, **kw), base - L)
+    assert torch.allclose(fft.flow_adddiag(base, **kw), base + d)
+    assert torch.allclose(fft.flow_subdiag(base, **kw), base - d)
     # in-place forms mutate and return the same tensor
     a = base.clone()
-    assert fft.flow_matvec_add_(a, flow, **kw) is a
+    assert fft.flow_addmatvec_(a, flow, **kw) is a
     assert torch.allclose(a, base + L)
     s = base.clone()
-    assert fft.flow_diag_sub_(s, **kw) is s
+    assert fft.flow_subdiag_(s, **kw) is s
     assert torch.allclose(s, base - d)
 
 
-def test_flow_matvec_add_gradcheck():
+def test_flow_addmatvec_gradcheck():
     # fresh-array add composes the autograd flow_matvec -> differentiable.
     H, W = 3, 4
     base = torch.randn(H, W, 2, dtype=torch.float64, requires_grad=True)
     flow = torch.randn(H, W, 2, dtype=torch.float64, requires_grad=True)
     kw = dict(absolute=0.2, membrane=0.5, shears=1.3, div=0.7, ndim=2)
     assert torch.autograd.gradcheck(
-        lambda p, f: fft.flow_matvec_add(p, f, **kw),
+        lambda p, f: fft.flow_addmatvec(p, f, **kw),
         (base, flow),
         eps=1e-6,
         atol=1e-4,
@@ -800,12 +800,12 @@ def test_field_accumulate_variants():
     kw = dict(absolute=[0.3, 0.4], membrane=[0.7, 0.5], ndim=2)
     L = fft.field_matvec(field, **kw)
     d = fft.field_diag(base.shape, **kw)
-    assert torch.allclose(fft.field_matvec_add(base, field, **kw), base + L)
-    assert torch.allclose(fft.field_matvec_sub(base, field, **kw), base - L)
-    assert torch.allclose(fft.field_diag_add(base, **kw), base + d)
-    assert torch.allclose(fft.field_diag_sub(base, **kw), base - d)
+    assert torch.allclose(fft.field_addmatvec(base, field, **kw), base + L)
+    assert torch.allclose(fft.field_submatvec(base, field, **kw), base - L)
+    assert torch.allclose(fft.field_adddiag(base, **kw), base + d)
+    assert torch.allclose(fft.field_subdiag(base, **kw), base - d)
     a = base.clone()
-    assert fft.field_matvec_add_(a, field, **kw) is a
+    assert fft.field_addmatvec_(a, field, **kw) is a
     assert torch.allclose(a, base + L)
 
 
@@ -851,3 +851,142 @@ def test_field_kernel_channels_inference():
     k = fft.field_kernel(2, absolute=[1.0, 2.0, 3.0])
     assert tuple(k.shape) == (1, 1, 3)
     assert tuple(fft.field_kernel(1, absolute=2.0, channels=4).shape) == (1, 4)
+
+
+# --------------------------------------------------------------------------- #
+# In-place accumulate ops: autograd safety                                    #
+#                                                                             #
+# These ops are `acc <- acc (+/-) g(...)`, i.e. additive in the tensor they   #
+# mutate, so d/d(acc) = I and no pre-mutation value is needed by backward.    #
+# The tests below verify that property rather than assuming it.               #
+# See API_CONTRACT.md, "In-place policy".                                     #
+# --------------------------------------------------------------------------- #
+
+
+_ACC_KW_FIELD = dict(absolute=[0.3, 0.4], membrane=[0.7, 0.5], ndim=2)
+_ACC_KW_FLOW = dict(absolute=0.3, membrane=0.7, shears=1.0, div=0.5, ndim=2)
+
+
+def test_inplace_accumulate_saves_nothing_for_backward():
+    """The autograd Functions must not stash the mutated tensor.
+
+    This is the structural form of the safety argument: if nothing is saved,
+    mutating the buffer cannot invalidate anything backward needs.
+    """
+    H, W, C = 4, 5, 2
+    field = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    base = torch.zeros(H, W, C, dtype=torch.float64, requires_grad=True)
+    out = fft.field_addmatvec_(base * 1.0, field, **_ACC_KW_FIELD)
+    # grad_fn is our accumulate Function; it should hold no saved tensors.
+    assert out.grad_fn is not None
+    assert not getattr(out.grad_fn, "saved_tensors", ())
+
+
+def test_inplace_accumulate_grad_wrt_accumulator_is_identity():
+    """d(acc + L@x)/d(acc) == I, so the incoming gradient passes through."""
+    H, W, C = 4, 5, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    base = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    out = fft.field_addmatvec_(base * 1.0, field, **_ACC_KW_FIELD)
+    g = torch.randn_like(out)
+    (grad,) = torch.autograd.grad(out, base, g)
+    assert torch.allclose(grad, g, atol=1e-12)
+
+
+def test_inplace_accumulate_sub_grad_wrt_accumulator_is_identity():
+    H, W, C = 4, 5, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    base = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    out = fft.field_submatvec_(base * 1.0, field, **_ACC_KW_FIELD)
+    g = torch.randn_like(out)
+    (grad,) = torch.autograd.grad(out, base, g)
+    assert torch.allclose(grad, g, atol=1e-12)
+
+
+@pytest.mark.parametrize("fn_name", ["field_addmatvec_", "field_submatvec_"])
+def test_field_matvec_inplace_gradcheck(fn_name):
+    """gradcheck through the genuinely in-place op (non-leaf accumulator)."""
+    H, W, C = 3, 4, 2
+    base = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    field = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    fn = getattr(fft, fn_name)
+
+    def run(p, f):
+        # `p * 1.0` makes a non-leaf so torch allows the in-place mutation,
+        # exactly as one would do with `Tensor.add_`.
+        return fn(p * 1.0, f, **_ACC_KW_FIELD)
+
+    assert torch.autograd.gradcheck(run, (base, field), eps=1e-6, atol=1e-4)
+
+
+@pytest.mark.parametrize("fn_name", ["flow_addmatvec_", "flow_submatvec_"])
+def test_flow_matvec_inplace_gradcheck(fn_name):
+    H, W = 3, 4
+    base = torch.randn(H, W, 2, dtype=torch.float64, requires_grad=True)
+    flow = torch.randn(H, W, 2, dtype=torch.float64, requires_grad=True)
+    fn = getattr(fft, fn_name)
+
+    def run(p, f):
+        return fn(p * 1.0, f, **_ACC_KW_FLOW)
+
+    assert torch.autograd.gradcheck(run, (base, flow), eps=1e-6, atol=1e-4)
+
+
+@pytest.mark.parametrize("fn_name", ["field_adddiag_", "field_subdiag_"])
+def test_field_diag_inplace_gradcheck(fn_name):
+    H, W, C = 3, 4, 2
+    base = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    fn = getattr(fft, fn_name)
+    assert torch.autograd.gradcheck(
+        lambda p: fn(p * 1.0, **_ACC_KW_FIELD), (base,), eps=1e-6, atol=1e-4
+    )
+
+
+def test_inplace_accumulate_rejects_leaf_requiring_grad():
+    """Torch's ordinary leaf rule still applies -- same as ``Tensor.add_``."""
+    H, W, C = 3, 4, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    leaf = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    with pytest.raises(RuntimeError, match="leaf Variable"):
+        fft.field_addmatvec_(leaf, field, **_ACC_KW_FIELD)
+    # ... and the documented workaround (the out-of-place spelling) works.
+    out = fft.field_addmatvec(leaf, field, **_ACC_KW_FIELD)
+    assert out.requires_grad
+
+
+def test_inplace_accumulate_bumps_version_counter():
+    """``ctx.mark_dirty`` must fire so a stale save raises, not lies."""
+    H, W, C = 3, 4, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    x = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    y = x * 1.0
+    v0 = y._version
+    fft.field_addmatvec_(y, field, **_ACC_KW_FIELD)
+    assert y._version > v0
+
+
+def test_out_of_place_accumulate_does_not_mutate_input():
+    """Out-of-place must clone, never touch the caller's tensor."""
+    H, W, C = 4, 5, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    base = torch.randn(H, W, C, dtype=torch.float64)
+    before = base.clone()
+    for fn in (fft.field_addmatvec, fft.field_submatvec):
+        out = fn(base, field, **_ACC_KW_FIELD)
+        assert torch.equal(base, before)
+        assert out is not base
+    for fn in (fft.field_adddiag, fft.field_subdiag):
+        out = fn(base, **_ACC_KW_FIELD)
+        assert torch.equal(base, before)
+        assert out is not base
+
+
+def test_inplace_and_out_of_place_agree():
+    """One kernel behind both spellings -> bitwise-equal results."""
+    H, W, C = 4, 5, 2
+    field = torch.randn(H, W, C, dtype=torch.float64)
+    base = torch.randn(H, W, C, dtype=torch.float64)
+    a = base.clone()
+    fft.field_addmatvec_(a, field, **_ACC_KW_FIELD)
+    b = fft.field_addmatvec(base, field, **_ACC_KW_FIELD)
+    assert torch.equal(a, b)
