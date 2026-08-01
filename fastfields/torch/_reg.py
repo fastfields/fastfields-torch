@@ -218,8 +218,18 @@ class _FieldMatvecAcc(torch.autograd.Function):
     """``acc (+/-)= L @ inp`` in place; diff'able wrt ``acc``/``inp``."""
 
     @staticmethod
-    def forward(ctx, acc, inp, voxel_size, absolute, membrane, bending,
-                bound, ndim, sub):
+    def forward(
+        ctx,
+        acc,
+        inp,
+        voxel_size,
+        absolute,
+        membrane,
+        bending,
+        bound,
+        ndim,
+        sub,
+    ):
         fn = _fb.field_submatvec_ if sub else _fb.field_addmatvec_
         fn(
             acc,
@@ -270,8 +280,20 @@ class _FlowMatvecAcc(torch.autograd.Function):
     """``acc (+/-)= L @ inp`` in place, flow; diff'able wrt acc/inp."""
 
     @staticmethod
-    def forward(ctx, acc, inp, voxel_size, absolute, membrane, bending,
-                shears, div, bound, ndim, sub):
+    def forward(
+        ctx,
+        acc,
+        inp,
+        voxel_size,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        bound,
+        ndim,
+        sub,
+    ):
         fn = _fb.flow_submatvec_ if sub else _fb.flow_addmatvec_
         fn(
             acc,
@@ -287,8 +309,16 @@ class _FlowMatvecAcc(torch.autograd.Function):
             stream=stream_ptr(acc),
         )
         ctx.mark_dirty(acc)
-        ctx.args = (voxel_size, absolute, membrane, bending, shears, div,
-                    bound, ndim)
+        ctx.args = (
+            voxel_size,
+            absolute,
+            membrane,
+            bending,
+            shears,
+            div,
+            bound,
+            ndim,
+        )
         ctx.sub = sub
         return acc
 
@@ -316,8 +346,19 @@ class _FlowMatvecAcc(torch.autograd.Function):
             if ctx.sub:
                 ginp = ginp.neg()
 
-        return (gacc, ginp, None, None, None, None, None, None, None,
-                None, None)
+        return (
+            gacc,
+            ginp,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
 
 
 class _FieldDiagAcc(torch.autograd.Function):
@@ -329,8 +370,9 @@ class _FieldDiagAcc(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, acc, voxel_size, absolute, membrane, bending, bound,
-                ndim, sub):
+    def forward(
+        ctx, acc, voxel_size, absolute, membrane, bending, bound, ndim, sub
+    ):
         fn = _fb.field_subdiag_ if sub else _fb.field_adddiag_
         fn(
             acc,
@@ -355,8 +397,19 @@ class _FlowDiagAcc(torch.autograd.Function):
     """``acc (+/-)= diag(L)`` in place (flow); differentiable wrt ``acc``."""
 
     @staticmethod
-    def forward(ctx, acc, voxel_size, absolute, membrane, bending, shears,
-                div, bound, ndim, sub):
+    def forward(
+        ctx,
+        acc,
+        voxel_size,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        bound,
+        ndim,
+        sub,
+    ):
         fn = _fb.flow_subdiag_ if sub else _fb.flow_adddiag_
         fn(
             acc,
@@ -379,8 +432,18 @@ class _FlowDiagAcc(torch.autograd.Function):
         return gacc, None, None, None, None, None, None, None, None, None
 
 
-def _field_matvec_acc(inp, field, absolute, membrane, bending, voxel_size,
-                      bound, ndim, sub, inplace):
+def _field_matvec_acc(
+    inp,
+    field,
+    absolute,
+    membrane,
+    bending,
+    voxel_size,
+    bound,
+    ndim,
+    sub,
+    inplace,
+):
     """Single entry point behind the four field-matvec accumulate spellings."""
     check_dtype(inp)
     check_dtype(field)
@@ -399,8 +462,20 @@ def _field_matvec_acc(inp, field, absolute, membrane, bending, voxel_size,
     )
 
 
-def _flow_matvec_acc(inp, flow, absolute, membrane, bending, shears, div,
-                     voxel_size, bound, ndim, sub, inplace):
+def _flow_matvec_acc(
+    inp,
+    flow,
+    absolute,
+    membrane,
+    bending,
+    shears,
+    div,
+    voxel_size,
+    bound,
+    ndim,
+    sub,
+    inplace,
+):
     """Single entry point behind the four flow-matvec accumulate spellings."""
     check_dtype(inp)
     check_dtype(flow)
@@ -420,8 +495,9 @@ def _flow_matvec_acc(inp, flow, absolute, membrane, bending, shears, div,
     )
 
 
-def _field_diag_acc(inp, absolute, membrane, bending, voxel_size, bound,
-                    ndim, sub, inplace):
+def _field_diag_acc(
+    inp, absolute, membrane, bending, voxel_size, bound, ndim, sub, inplace
+):
     """Single entry point behind the four field-diag accumulate spellings."""
     check_dtype(inp)
     channels = inp.shape[-1]
@@ -438,8 +514,19 @@ def _field_diag_acc(inp, absolute, membrane, bending, voxel_size, bound,
     )
 
 
-def _flow_diag_acc(inp, absolute, membrane, bending, shears, div, voxel_size,
-                   bound, ndim, sub, inplace):
+def _flow_diag_acc(
+    inp,
+    absolute,
+    membrane,
+    bending,
+    shears,
+    div,
+    voxel_size,
+    bound,
+    ndim,
+    sub,
+    inplace,
+):
     """Single entry point behind the four flow-diag accumulate spellings."""
     check_dtype(inp)
     acc = inp if inplace else inp.clone()
@@ -814,8 +901,18 @@ def flow_addmatvec(
     Differentiable wrt both ``inp`` and ``flow``.
     """
     return _flow_matvec_acc(
-        inp, flow, absolute, membrane, bending, shears, div,
-        voxel_size, bound, ndim, sub=False, inplace=False,
+        inp,
+        flow,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size,
+        bound,
+        ndim,
+        sub=False,
+        inplace=False,
     )
 
 
@@ -839,8 +936,18 @@ def flow_submatvec(
     Differentiable wrt both ``inp`` and ``flow``.
     """
     return _flow_matvec_acc(
-        inp, flow, absolute, membrane, bending, shears, div,
-        voxel_size, bound, ndim, sub=True, inplace=False,
+        inp,
+        flow,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size,
+        bound,
+        ndim,
+        sub=True,
+        inplace=False,
     )
 
 
@@ -865,8 +972,18 @@ def flow_addmatvec_(
     ``Tensor.add_``.
     """
     return _flow_matvec_acc(
-        inp, flow, absolute, membrane, bending, shears, div,
-        voxel_size, bound, ndim, sub=False, inplace=True,
+        inp,
+        flow,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size,
+        bound,
+        ndim,
+        sub=False,
+        inplace=True,
     )
 
 
@@ -891,8 +1008,18 @@ def flow_submatvec_(
     ``Tensor.add_``.
     """
     return _flow_matvec_acc(
-        inp, flow, absolute, membrane, bending, shears, div,
-        voxel_size, bound, ndim, sub=True, inplace=True,
+        inp,
+        flow,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size,
+        bound,
+        ndim,
+        sub=True,
+        inplace=True,
     )
 
 
@@ -914,8 +1041,17 @@ def flow_adddiag(
     clone. Differentiable wrt ``inp``.
     """
     return _flow_diag_acc(
-        inp, absolute, membrane, bending, shears, div,
-        voxel_size, bound, ndim, sub=False, inplace=False,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size,
+        bound,
+        ndim,
+        sub=False,
+        inplace=False,
     )
 
 
@@ -937,8 +1073,17 @@ def flow_subdiag(
     clone. Differentiable wrt ``inp``.
     """
     return _flow_diag_acc(
-        inp, absolute, membrane, bending, shears, div,
-        voxel_size, bound, ndim, sub=True, inplace=False,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size,
+        bound,
+        ndim,
+        sub=True,
+        inplace=False,
     )
 
 
@@ -961,8 +1106,17 @@ def flow_adddiag_(
     mutated, as with ``Tensor.add_``.
     """
     return _flow_diag_acc(
-        inp, absolute, membrane, bending, shears, div,
-        voxel_size, bound, ndim, sub=False, inplace=True,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size,
+        bound,
+        ndim,
+        sub=False,
+        inplace=True,
     )
 
 
@@ -985,8 +1139,17 @@ def flow_subdiag_(
     mutated, as with ``Tensor.add_``.
     """
     return _flow_diag_acc(
-        inp, absolute, membrane, bending, shears, div,
-        voxel_size, bound, ndim, sub=True, inplace=True,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size,
+        bound,
+        ndim,
+        sub=True,
+        inplace=True,
     )
 
 
@@ -1061,8 +1224,16 @@ def field_addmatvec(
     Differentiable wrt both ``inp`` and ``field``.
     """
     return _field_matvec_acc(
-        inp, field, absolute, membrane, bending,
-        voxel_size, bound, ndim, sub=False, inplace=False,
+        inp,
+        field,
+        absolute,
+        membrane,
+        bending,
+        voxel_size,
+        bound,
+        ndim,
+        sub=False,
+        inplace=False,
     )
 
 
@@ -1084,8 +1255,16 @@ def field_submatvec(
     Differentiable wrt both ``inp`` and ``field``.
     """
     return _field_matvec_acc(
-        inp, field, absolute, membrane, bending,
-        voxel_size, bound, ndim, sub=True, inplace=False,
+        inp,
+        field,
+        absolute,
+        membrane,
+        bending,
+        voxel_size,
+        bound,
+        ndim,
+        sub=True,
+        inplace=False,
     )
 
 
@@ -1108,8 +1287,16 @@ def field_addmatvec_(
     ``Tensor.add_``.
     """
     return _field_matvec_acc(
-        inp, field, absolute, membrane, bending,
-        voxel_size, bound, ndim, sub=False, inplace=True,
+        inp,
+        field,
+        absolute,
+        membrane,
+        bending,
+        voxel_size,
+        bound,
+        ndim,
+        sub=False,
+        inplace=True,
     )
 
 
@@ -1132,8 +1319,16 @@ def field_submatvec_(
     ``Tensor.add_``.
     """
     return _field_matvec_acc(
-        inp, field, absolute, membrane, bending,
-        voxel_size, bound, ndim, sub=True, inplace=True,
+        inp,
+        field,
+        absolute,
+        membrane,
+        bending,
+        voxel_size,
+        bound,
+        ndim,
+        sub=True,
+        inplace=True,
     )
 
 
@@ -1153,8 +1348,15 @@ def field_adddiag(
     clone. Differentiable wrt ``inp``.
     """
     return _field_diag_acc(
-        inp, absolute, membrane, bending,
-        voxel_size, bound, ndim, sub=False, inplace=False,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        voxel_size,
+        bound,
+        ndim,
+        sub=False,
+        inplace=False,
     )
 
 
@@ -1174,8 +1376,15 @@ def field_subdiag(
     clone. Differentiable wrt ``inp``.
     """
     return _field_diag_acc(
-        inp, absolute, membrane, bending,
-        voxel_size, bound, ndim, sub=True, inplace=False,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        voxel_size,
+        bound,
+        ndim,
+        sub=True,
+        inplace=False,
     )
 
 
@@ -1196,8 +1405,15 @@ def field_adddiag_(
     mutated, as with ``Tensor.add_``.
     """
     return _field_diag_acc(
-        inp, absolute, membrane, bending,
-        voxel_size, bound, ndim, sub=False, inplace=True,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        voxel_size,
+        bound,
+        ndim,
+        sub=False,
+        inplace=True,
     )
 
 
@@ -1218,6 +1434,13 @@ def field_subdiag_(
     mutated, as with ``Tensor.add_``.
     """
     return _field_diag_acc(
-        inp, absolute, membrane, bending,
-        voxel_size, bound, ndim, sub=True, inplace=True,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        voxel_size,
+        bound,
+        ndim,
+        sub=True,
+        inplace=True,
     )
