@@ -793,6 +793,23 @@ def test_field_forward_and_precond():
     assert torch.allclose(residual, torch.zeros_like(residual), atol=1e-5)
 
 
+def test_field_relax_solves_system():
+    # relaxation drives (H + L) x -> g; with a strong diagonal Hessian the
+    # Gauss-Seidel sweeps converge. Residual recomputes L x via field_matvec.
+    H, W, C, hdiag = 6, 7, 2, 6.0
+    hes = torch.zeros(H, W, C * (C + 1) // 2, dtype=torch.float64)
+    hes[..., 0] = hdiag
+    hes[..., 1] = hdiag
+    grd = torch.randn(H, W, C, dtype=torch.float64)
+    kw = dict(absolute=[0.3, 0.4], membrane=[0.7, 0.5], ndim=2)
+    sol = torch.zeros(H, W, C, dtype=torch.float64)
+    out = fft.field_relax(sol, hes, grd, nb_iter=250, **kw)
+    assert out is sol  # in-place, warm-started
+    lx = fft.field_matvec(sol, **kw)
+    rel = (hdiag * sol + lx - grd).norm() / grd.norm()
+    assert rel < 3e-3
+
+
 def test_field_accumulate_variants():
     H, W, C = 5, 6, 2
     field = torch.randn(H, W, C, dtype=torch.float64)

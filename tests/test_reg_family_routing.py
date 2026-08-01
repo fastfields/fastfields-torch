@@ -51,6 +51,14 @@ _CASES = {
     "field_diag": lambda: ff.field_diag(
         SHAPE, membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
+    "field_relax": lambda: ff.field_relax(
+        _x(),
+        _hes(),
+        torch.ones(SHAPE, dtype=torch.float64),
+        membrane=1.0,
+        voxel_size=VS,
+        ndim=NDIM,
+    ),
     "field_precond": lambda: ff.field_precond(
         _hes(), _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
