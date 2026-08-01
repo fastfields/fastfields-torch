@@ -415,11 +415,164 @@ def test_push_gradcheck_wrt_input():
     )
 
 
-def test_pull_grid_grad_not_supported():
-    grid = torch.zeros(3, 1, dtype=torch.float64, requires_grad=True)
-    inp = torch.randn(4, 1, dtype=torch.float64)
-    with pytest.raises(NotImplementedError):
-        fft.pull(inp, grid)
+# --- differentiating through `grid` ---------------------------------------- #
+#
+# gradcheck is the actual proof that the grid adjoint is right: it compares the
+# analytic backward against a central finite difference of the forward.
+#
+# Grid coordinates are kept away from integer/half-integer positions (the
+# spline knots). A spline of order k is C^(k-1), so for order 1 the derivative
+# wrt position genuinely jumps at a knot and a finite difference straddling one
+# is meaningless -- that is a property of the interpolant, not a bug.
+
+
+def _safe_grid(*shape, d=1, lo=0.3, hi=None, generator=None):
+    """Random coordinates inside (lo, hi), off the knots, requiring grad."""
+    hi = 3.4 if hi is None else hi
+    g = torch.rand(*shape, d, dtype=torch.float64) * (hi - lo) + lo
+    # nudge away from integers / half-integers
+    g = g + 0.137
+    return g.requires_grad_(True)
+
+
+@pytest.mark.parametrize("order", [1, 2, 3])
+def test_pull_gradcheck_wrt_grid_1d(order):
+    inp = torch.randn(7, 2, dtype=torch.float64)
+    grid = _safe_grid(4)
+    assert torch.autograd.gradcheck(
+        lambda g: fft.pull(inp, g, order=order), (grid,), eps=1e-6, atol=1e-5
+    )
+
+
+@pytest.mark.parametrize("order", [1, 2, 3])
+def test_pull_gradcheck_wrt_both_1d(order):
+    inp = torch.randn(7, 2, dtype=torch.float64, requires_grad=True)
+    grid = _safe_grid(4)
+    assert torch.autograd.gradcheck(
+        lambda x, g: fft.pull(x, g, order=order),
+        (inp, grid),
+        eps=1e-6,
+        atol=1e-5,
+    )
+
+
+@pytest.mark.parametrize("order", [1, 2, 3])
+def test_pull_gradcheck_wrt_both_2d(order):
+    inp = torch.randn(5, 6, 2, dtype=torch.float64, requires_grad=True)
+    grid = _safe_grid(3, 3, d=2)
+    assert torch.autograd.gradcheck(
+        lambda x, g: fft.pull(x, g, order=order),
+        (inp, grid),
+        eps=1e-6,
+        atol=1e-5,
+    )
+
+
+@pytest.mark.parametrize("order", [1, 2, 3])
+def test_pull_gradcheck_wrt_both_3d(order):
+    inp = torch.randn(5, 5, 5, 1, dtype=torch.float64, requires_grad=True)
+    grid = _safe_grid(2, 2, 2, d=3)
+    assert torch.autograd.gradcheck(
+        lambda x, g: fft.pull(x, g, order=order),
+        (inp, grid),
+        eps=1e-6,
+        atol=1e-5,
+    )
+
+
+@pytest.mark.parametrize("bound", ["dct2", "dst2", "dft", "replicate", "zero"])
+def test_pull_gradcheck_wrt_both_bounds(bound):
+    inp = torch.randn(6, 5, 2, dtype=torch.float64, requires_grad=True)
+    grid = _safe_grid(3, 2, d=2)
+    assert torch.autograd.gradcheck(
+        lambda x, g: fft.pull(x, g, order=3, bound=bound),
+        (inp, grid),
+        eps=1e-6,
+        atol=1e-5,
+    )
+
+
+@pytest.mark.parametrize("order", [1, 2, 3])
+def test_push_gradcheck_wrt_both_1d(order):
+    grid = _safe_grid(4)
+    inp = torch.randn(4, 2, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(
+        lambda x, g: fft.push(x, g, shape=7, order=order),
+        (inp, grid),
+        eps=1e-6,
+        atol=1e-5,
+    )
+
+
+@pytest.mark.parametrize("order", [1, 2, 3])
+def test_push_gradcheck_wrt_both_2d(order):
+    grid = _safe_grid(3, 3, d=2)
+    inp = torch.randn(3, 3, 2, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(
+        lambda x, g: fft.push(x, g, shape=(5, 6), order=order),
+        (inp, grid),
+        eps=1e-6,
+        atol=1e-5,
+    )
+
+
+@pytest.mark.parametrize("order", [1, 2, 3])
+def test_push_gradcheck_wrt_both_3d(order):
+    grid = _safe_grid(2, 2, 2, d=3)
+    inp = torch.randn(2, 2, 2, 1, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(
+        lambda x, g: fft.push(x, g, shape=(5, 5, 5), order=order),
+        (inp, grid),
+        eps=1e-6,
+        atol=1e-5,
+    )
+
+
+def test_pull_gradcheck_batched():
+    inp = torch.randn(2, 6, 5, 2, dtype=torch.float64, requires_grad=True)
+    grid = _safe_grid(2, 3, 2, d=2)
+    assert torch.autograd.gradcheck(
+        lambda x, g: fft.pull(x, g, order=2),
+        (inp, grid),
+        eps=1e-6,
+        atol=1e-5,
+    )
+
+
+@pytest.mark.parametrize("op", ["pull", "push"])
+def test_field_grad_matches_whether_or_not_grid_needs_grad(op):
+    """The fused (grid-aware) branch and the cheap push/pull-only branch must
+    agree on the field gradient -- they are two code paths for one quantity."""
+    grid0 = torch.rand(2, 2, 2, dtype=torch.float64) * 3 + 0.437
+    x0 = torch.randn(
+        (2, 2, 2) if op == "push" else (6, 5, 2), dtype=torch.float64
+    )
+
+    def run(grid_requires_grad):
+        x = x0.clone().requires_grad_(True)
+        g = grid0.clone().requires_grad_(grid_requires_grad)
+        if op == "pull":
+            out = fft.pull(x, g, order=3)
+        else:
+            out = fft.push(x, g, shape=(6, 5), order=3)
+        out.pow(2).sum().backward()
+        return x.grad
+
+    assert torch.allclose(run(False), run(True), atol=1e-12)
+
+
+def test_grid_grad_zero_outside_fov():
+    """extrapolate=0 gates samples past the voxel centres; their grid gradient
+    must be exactly zero (the gate is a step, not a smooth factor)."""
+    inp = torch.arange(6.0, dtype=torch.float64).reshape(6, 1)
+    grid = torch.tensor(
+        [[-4.0], [2.437], [11.0]], dtype=torch.float64, requires_grad=True
+    )
+    out = fft.pull(inp, grid, order=1, extrapolate=0)
+    out.sum().backward()
+    assert grid.grad[0].item() == 0.0
+    assert grid.grad[2].item() == 0.0
+    assert grid.grad[1].item() != 0.0
 
 
 # --------------------------------------------------------------------------- #
