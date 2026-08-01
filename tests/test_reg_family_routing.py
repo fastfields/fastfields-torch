@@ -57,28 +57,28 @@ _CASES = {
     "field_forward": lambda: ff.field_forward(
         _hes(), _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "field_matvec_add": lambda: ff.field_matvec_add(
+    "field_addmatvec": lambda: ff.field_addmatvec(
         _x(), _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "field_matvec_sub": lambda: ff.field_matvec_sub(
+    "field_submatvec": lambda: ff.field_submatvec(
         _x(), _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "field_matvec_add_": lambda: ff.field_matvec_add_(
+    "field_addmatvec_": lambda: ff.field_addmatvec_(
         _x(), _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "field_matvec_sub_": lambda: ff.field_matvec_sub_(
+    "field_submatvec_": lambda: ff.field_submatvec_(
         _x(), _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "field_diag_add": lambda: ff.field_diag_add(
+    "field_adddiag": lambda: ff.field_adddiag(
         _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "field_diag_sub": lambda: ff.field_diag_sub(
+    "field_subdiag": lambda: ff.field_subdiag(
         _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "field_diag_add_": lambda: ff.field_diag_add_(
+    "field_adddiag_": lambda: ff.field_adddiag_(
         _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "field_diag_sub_": lambda: ff.field_diag_sub_(
+    "field_subdiag_": lambda: ff.field_subdiag_(
         _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
     "flow_matvec": lambda: ff.flow_matvec(
@@ -102,28 +102,28 @@ _CASES = {
     "flow_forward": lambda: ff.flow_forward(
         _hes(), _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "flow_matvec_add": lambda: ff.flow_matvec_add(
+    "flow_addmatvec": lambda: ff.flow_addmatvec(
         _x(), _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "flow_matvec_sub": lambda: ff.flow_matvec_sub(
+    "flow_submatvec": lambda: ff.flow_submatvec(
         _x(), _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "flow_matvec_add_": lambda: ff.flow_matvec_add_(
+    "flow_addmatvec_": lambda: ff.flow_addmatvec_(
         _x(), _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "flow_matvec_sub_": lambda: ff.flow_matvec_sub_(
+    "flow_submatvec_": lambda: ff.flow_submatvec_(
         _x(), _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "flow_diag_add": lambda: ff.flow_diag_add(
+    "flow_adddiag": lambda: ff.flow_adddiag(
         _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "flow_diag_sub": lambda: ff.flow_diag_sub(
+    "flow_subdiag": lambda: ff.flow_subdiag(
         _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "flow_diag_add_": lambda: ff.flow_diag_add_(
+    "flow_adddiag_": lambda: ff.flow_adddiag_(
         _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
-    "flow_diag_sub_": lambda: ff.flow_diag_sub_(
+    "flow_subdiag_": lambda: ff.flow_subdiag_(
         _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
     ),
 }

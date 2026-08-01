@@ -24,28 +24,28 @@ from ._util import check_dtype, stream_ptr
 
 __all__ = [
     "field_matvec",
-    "field_matvec_add",
-    "field_matvec_add_",
-    "field_matvec_sub",
-    "field_matvec_sub_",
+    "field_addmatvec",
+    "field_addmatvec_",
+    "field_submatvec",
+    "field_submatvec_",
     "field_diag",
-    "field_diag_add",
-    "field_diag_add_",
-    "field_diag_sub",
-    "field_diag_sub_",
+    "field_adddiag",
+    "field_adddiag_",
+    "field_subdiag",
+    "field_subdiag_",
     "field_kernel",
     "field_precond",
     "field_forward",
     "flow_matvec",
-    "flow_matvec_add",
-    "flow_matvec_add_",
-    "flow_matvec_sub",
-    "flow_matvec_sub_",
+    "flow_addmatvec",
+    "flow_addmatvec_",
+    "flow_submatvec",
+    "flow_submatvec_",
     "flow_diag",
-    "flow_diag_add",
-    "flow_diag_add_",
-    "flow_diag_sub",
-    "flow_diag_sub_",
+    "flow_adddiag",
+    "flow_adddiag_",
+    "flow_subdiag",
+    "flow_subdiag_",
     "flow_kernel",
     "flow_relax",
     "flow_precond",
@@ -220,7 +220,7 @@ class _FieldMatvecAcc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, acc, inp, voxel_size, absolute, membrane, bending,
                 bound, ndim, sub):
-        fn = _fb.field_matvec_sub_ if sub else _fb.field_matvec_add_
+        fn = _fb.field_submatvec_ if sub else _fb.field_addmatvec_
         fn(
             acc,
             inp,
@@ -272,7 +272,7 @@ class _FlowMatvecAcc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, acc, inp, voxel_size, absolute, membrane, bending,
                 shears, div, bound, ndim, sub):
-        fn = _fb.flow_matvec_sub_ if sub else _fb.flow_matvec_add_
+        fn = _fb.flow_submatvec_ if sub else _fb.flow_addmatvec_
         fn(
             acc,
             inp,
@@ -331,7 +331,7 @@ class _FieldDiagAcc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, acc, voxel_size, absolute, membrane, bending, bound,
                 ndim, sub):
-        fn = _fb.field_diag_sub_ if sub else _fb.field_diag_add_
+        fn = _fb.field_subdiag_ if sub else _fb.field_adddiag_
         fn(
             acc,
             voxel_size=voxel_size,
@@ -357,7 +357,7 @@ class _FlowDiagAcc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, acc, voxel_size, absolute, membrane, bending, shears,
                 div, bound, ndim, sub):
-        fn = _fb.flow_diag_sub_ if sub else _fb.flow_diag_add_
+        fn = _fb.flow_subdiag_ if sub else _fb.flow_adddiag_
         fn(
             acc,
             voxel_size=voxel_size,
@@ -794,7 +794,7 @@ def flow_forward(
 # augmented assignment (``add_``/``sub_``), intended for non-autograd use.
 
 
-def flow_matvec_add(
+def flow_addmatvec(
     inp: Tensor,
     flow: Tensor,
     absolute: float = 0.0,
@@ -819,7 +819,7 @@ def flow_matvec_add(
     )
 
 
-def flow_matvec_sub(
+def flow_submatvec(
     inp: Tensor,
     flow: Tensor,
     absolute: float = 0.0,
@@ -844,7 +844,7 @@ def flow_matvec_sub(
     )
 
 
-def flow_matvec_add_(
+def flow_addmatvec_(
     inp: Tensor,
     flow: Tensor,
     absolute: float = 0.0,
@@ -870,7 +870,7 @@ def flow_matvec_add_(
     )
 
 
-def flow_matvec_sub_(
+def flow_submatvec_(
     inp: Tensor,
     flow: Tensor,
     absolute: float = 0.0,
@@ -896,7 +896,7 @@ def flow_matvec_sub_(
     )
 
 
-def flow_diag_add(
+def flow_adddiag(
     inp: Tensor,
     absolute: float = 0.0,
     membrane: float = 0.0,
@@ -919,7 +919,7 @@ def flow_diag_add(
     )
 
 
-def flow_diag_sub(
+def flow_subdiag(
     inp: Tensor,
     absolute: float = 0.0,
     membrane: float = 0.0,
@@ -942,7 +942,7 @@ def flow_diag_sub(
     )
 
 
-def flow_diag_add_(
+def flow_adddiag_(
     inp: Tensor,
     absolute: float = 0.0,
     membrane: float = 0.0,
@@ -966,7 +966,7 @@ def flow_diag_add_(
     )
 
 
-def flow_diag_sub_(
+def flow_subdiag_(
     inp: Tensor,
     absolute: float = 0.0,
     membrane: float = 0.0,
@@ -1043,7 +1043,7 @@ def field_forward(
     return out
 
 
-def field_matvec_add(
+def field_addmatvec(
     inp: Tensor,
     field: Tensor,
     absolute=None,
@@ -1066,7 +1066,7 @@ def field_matvec_add(
     )
 
 
-def field_matvec_sub(
+def field_submatvec(
     inp: Tensor,
     field: Tensor,
     absolute=None,
@@ -1089,7 +1089,7 @@ def field_matvec_sub(
     )
 
 
-def field_matvec_add_(
+def field_addmatvec_(
     inp: Tensor,
     field: Tensor,
     absolute=None,
@@ -1113,7 +1113,7 @@ def field_matvec_add_(
     )
 
 
-def field_matvec_sub_(
+def field_submatvec_(
     inp: Tensor,
     field: Tensor,
     absolute=None,
@@ -1137,7 +1137,7 @@ def field_matvec_sub_(
     )
 
 
-def field_diag_add(
+def field_adddiag(
     inp: Tensor,
     absolute=None,
     membrane=None,
@@ -1158,7 +1158,7 @@ def field_diag_add(
     )
 
 
-def field_diag_sub(
+def field_subdiag(
     inp: Tensor,
     absolute=None,
     membrane=None,
@@ -1179,7 +1179,7 @@ def field_diag_sub(
     )
 
 
-def field_diag_add_(
+def field_adddiag_(
     inp: Tensor,
     absolute=None,
     membrane=None,
@@ -1201,7 +1201,7 @@ def field_diag_add_(
     )
 
 
-def field_diag_sub_(
+def field_subdiag_(
     inp: Tensor,
     absolute=None,
     membrane=None,
