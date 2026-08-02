@@ -14,6 +14,7 @@ These wrappers mirror the autograd structure of ``jitfields/jitfields/sym.py``
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 import fastfields.dlpack as _fb
@@ -24,6 +25,57 @@ from torch import Tensor
 from ._util import check_dtype, stream_ptr
 
 __all__ = ["sym_matvec", "sym_solve", "sym_invert"]
+
+
+def _channels_from_packed(packed_len: int) -> int:
+    """Return the channel count ``C`` with ``C*(C+1)//2 == packed_len``.
+
+    Raises
+    ------
+    ValueError
+        If ``packed_len`` is not a triangular number ``C*(C+1)/2``.
+    """
+    c = int((math.isqrt(8 * packed_len + 1) - 1) // 2)
+    if c * (c + 1) // 2 != packed_len:
+        raise ValueError(
+            f"packed length {packed_len} is not a triangular number "
+            "(expected C*(C+1)/2 for some integer C)"
+        )
+    return c
+
+
+def _check_sym(mat: Tensor, vec: Tensor) -> int:
+    """Validate a packed matrix / vector pair and return the channel count.
+
+    Verifies that ``mat``'s packed trailing dim ``C*(C+1)//2`` matches the
+    channel count ``C`` implied by ``vec``'s trailing dim, so a mismatched pair
+    cannot reach the raw binding (which would OOB-read / segfault). Batch dims
+    are broadcast by the caller, so only the channel relation is enforced here.
+
+    Parameters
+    ----------
+    mat : `(..., C*(C+1)//2) tensor`
+        Packed compact-symmetric matrix.
+    vec : `(..., C) tensor`
+        Vector.
+
+    Returns
+    -------
+    int
+        The channel count ``C``.
+
+    Raises
+    ------
+    ValueError
+        If ``vec``'s channel count does not match the matrix packing.
+    """
+    c = _channels_from_packed(mat.shape[-1])
+    if vec.shape[-1] != c:
+        raise ValueError(
+            f"vec has {vec.shape[-1]} channels but the packed matrix "
+            f"encodes {c} channels (packed length {mat.shape[-1]})"
+        )
+    return c
 
 
 def sym_matvec(mat: Tensor, vec: Tensor) -> Tensor:
@@ -49,6 +101,7 @@ def sym_matvec(mat: Tensor, vec: Tensor) -> Tensor:
         Matrix-vector product (broadcast batch shape + ``(C,)``).
     """
     check_dtype(mat, vec)
+    _check_sym(mat, vec)
     batch = torch.broadcast_shapes(mat.shape[:-1], vec.shape[:-1])
     mat = mat.expand(*batch, mat.shape[-1])
     vec = vec.expand(*batch, vec.shape[-1])
@@ -81,6 +134,12 @@ def sym_solve(
     check_dtype(mat, vec)
     if weight is not None:
         check_dtype(weight)
+    c = _check_sym(mat, vec)
+    if weight is not None and weight.shape[-1] != c:
+        raise ValueError(
+            f"weight has {weight.shape[-1]} channels but the packed matrix "
+            f"encodes {c} channels"
+        )
     shapes = [mat.shape[:-1], vec.shape[:-1]]
     if weight is not None:
         shapes.append(weight.shape[:-1])

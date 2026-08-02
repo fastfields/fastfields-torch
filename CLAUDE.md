@@ -1,11 +1,11 @@
 # fastfields-torch  (imports as `fastfields.torch`)
 
 A user-friendly, **autograd-enabled** PyTorch interface over the
-`fastfields.dlpack` (`fastfields-bind-py`) bindings. The autograd structure
+`fastfields.dlpack` bindings. The autograd structure
 mirrors `jitfields` (`sym.py`, `resize.py`, `splinc.py`).
 
 ```
-… ─ lib ─ bind-py ─ torch ← (you are here) … ─ fastfields
+… ─ lib ─ dlpack ─ torch ← (you are here) … ─ fastfields
 ```
 
 ## Philosophy / role

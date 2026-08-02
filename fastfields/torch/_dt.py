@@ -121,7 +121,8 @@ def dt_mesh(
     vertices : torch.Tensor
         Mesh vertices, shape ``(*B, V, D)`` (same float dtype as ``loc``).
     faces : torch.Tensor
-        Triangle vertex indices, shape ``(*B, F, D)`` (integer tensor).
+        Triangle vertex indices, shape ``(*B, F, D)`` (integer tensor; cast
+        to int64 before the binding).
     signed : bool, default=True
         Return signed distances.
     naive : bool, default=False
@@ -153,6 +154,11 @@ def dt_mesh(
     """
     check_dtype(loc, vertices)
     _reject_grad("dt_mesh", loc, vertices)
+    # faces holds integer vertex indices: the binding reads them at int64
+    # width, so an int32 (or other) faces array would be misread. Normalize to
+    # int64 before the binding (mirrors the numpy wrapper).
+    if faces.dtype != torch.int64:
+        faces = faces.to(torch.int64)
     batch = torch.broadcast_shapes(
         loc.shape[:-1], vertices.shape[:-2], faces.shape[:-2]
     )
