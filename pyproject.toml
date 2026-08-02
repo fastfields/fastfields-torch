@@ -25,15 +25,23 @@ classifiers = [
 description = "User-friendly, autograd-enabled torch interface over the fastfields.dlpack bindings."
 readme = "README.md"
 requires-python = ">=3.9"
-# `~=0.1` is `>=0.1, ==0.*`: the fastfields distributions are versioned and
-# released together off the same 0.1 line (versioningit `default-tag = "0.1"`),
-# so a bare, unversioned dependency would happily resolve to a future 1.x whose
-# ABI/enums no longer match this wrapper. The floor is deliberately the line,
-# not an exact pin, so in-development builds (`0.1+<distance>.g<rev>`, and the
-# backend-labelled release wheels `0.1+cpu` / `0.1+cu128`) all satisfy it and
-# the constraint does not go stale on every commit.
+# `==0.*` is a bare wildcard, not a range: it allows any 0.x.y — including
+# 0.0.x and any dev/alpha/beta/rc, e.g. `0.1.0.dev1` or `0.0.dev0` — while
+# still blocking a future 1.x whose ABI/enums no longer match this wrapper.
+# The fastfields distributions are versioned and released together off the
+# same 0.x line (versioningit `default-tag = "0.1"`), so the upper bound is
+# the only bound doing real work here. This is the first release of these
+# packages, so there is no earlier version to guard against with a floor —
+# an earlier fix pinned `>=0.1.dev0` to admit 0.1.0 pre-releases, but that
+# floor was protecting against nothing real and has been dropped for a
+# simpler bare wildcard.
+#
+# Accepted risk: versioningit's `default-version = "0+unknown"` fallback
+# (fires when `git describe` can't find a tag, e.g. a shallow-clone CI
+# misconfiguration) would also satisfy `==0.*` if it were ever accidentally
+# published. That's an accepted risk, not something this pin tries to solve.
 dependencies = [
-    "fastfields-dlpack~=0.1",
+    "fastfields-dlpack==0.*",
     "torch",
     "numpy",
 ]
