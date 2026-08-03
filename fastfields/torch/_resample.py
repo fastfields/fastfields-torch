@@ -100,7 +100,7 @@ def resample(
     """Spline resample (prolongation) of the last ``ndim`` axes.
 
     Differentiable with respect to ``inp`` (backward is ``restriction``). The
-    signature matches the numpy/cupy wrappers so ``fastfields.any.resample``
+    signature matches the numpy/cupy wrappers so ``fastfields.auto.resample``
     dispatches consistently.
 
     Parameters
