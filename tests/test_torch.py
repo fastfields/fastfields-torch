@@ -349,9 +349,7 @@ def test_nondiff_ops_backward_raises_clear_runtimeerror(name, call):
     ],
 )
 def test_nondiff_inplace_ops_backward_raises_clear_runtimeerror(name, call):
-    x = _nonleaf(
-        torch.tensor([1.0, 1.0, 0.0], dtype=torch.float64)
-    )
+    x = _nonleaf(torch.tensor([1.0, 1.0, 0.0], dtype=torch.float64))
     out = call(x)
     assert out is x
     assert out.requires_grad
