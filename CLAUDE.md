@@ -19,10 +19,18 @@ mirrors `jitfields` (`sym.py`, `resize.py`, `splinc.py`).
 ## Differentiability (high level)
 - **Differentiable**: `sym_matvec` (grad w.r.t. `mat`, `vec`; backward via
   `sym_matvec`/`sym_matvec_backward`), `sym_solve` (w.r.t. `vec`, self-adjoint),
-  `resample` / `restriction` (each other's adjoint at reciprocal scale),
-  `spline_coeff` (self-adjoint).
-- **Not differentiable** (raise if grad required): `sym_invert`,
-  `dt_euclidean` / `dt_l1` / `dt_mesh`.
+  `sym_solve_` (in-place, same gradient as `sym_solve` — backward never reads
+  the pre-mutation value), `resample` / `restriction` (each other's adjoint at
+  reciprocal scale), `spline_coeff` / `spline_coeff_` (self-adjoint).
+- **Not differentiable, but still exposed** (parity with `fastfields.numpy`/
+  `fastfields.cupy`): `dt_euclidean` / `dt_euclidean_`, `dt_l1` / `dt_l1_`,
+  `dt_mesh` (no in-place form), `sym_invert` / `sym_invert_`. Forward always
+  runs, including when an input requires grad; only calling `.backward()`
+  through the output raises `RuntimeError` naming the op (a
+  `torch.autograd.Function` whose `backward()` raises — see
+  `_util.raise_not_differentiable` — rather than rejecting the call up front
+  or omitting the op). See `API_CONTRACT.md` ("In-place policy") and
+  fastfields#4.
 - Posdef matrices use the compact-symmetric packing (diagonal first, then upper
   triangle). `Spline`/`Bound` enums re-exported from `fastfields.dlpack`.
 
