@@ -40,6 +40,11 @@ def _hes():
     return torch.ones((6, 6, 6, NDIM * (NDIM + 1) // 2), dtype=torch.float64)
 
 
+def _wgt():
+    # RLS weight map (trailing dim 1, shared across channels).
+    return torch.ones((6, 6, 6, 1), dtype=torch.float64)
+
+
 # Every public field_*/flow_* wrapper, with a call that reaches the C layer.
 _CASES = {
     "field_matvec": lambda: ff.field_matvec(
@@ -85,6 +90,21 @@ _CASES = {
     ),
     "field_adddiag_": lambda: ff.field_adddiag_(
         _x(), membrane=1.0, voxel_size=VS, ndim=NDIM
+    ),
+    "field_matvec_rls": lambda: ff.field_matvec_rls(
+        _x(), _wgt(), membrane=1.0, voxel_size=VS, ndim=NDIM
+    ),
+    "field_diag_rls": lambda: ff.field_diag_rls(
+        _wgt(), membrane=1.0, channels=NDIM, voxel_size=VS, ndim=NDIM
+    ),
+    "field_relax_rls": lambda: ff.field_relax_rls(
+        _x(),
+        _hes(),
+        torch.ones(SHAPE, dtype=torch.float64),
+        _wgt(),
+        membrane=1.0,
+        voxel_size=VS,
+        ndim=NDIM,
     ),
     "field_subdiag_": lambda: ff.field_subdiag_(
         _x(), membrane=1.0, voxel_size=VS, ndim=NDIM

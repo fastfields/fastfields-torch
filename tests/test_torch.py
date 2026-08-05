@@ -1000,6 +1000,64 @@ def test_field_relax_solves_system():
     assert rel < 3e-3
 
 
+def test_field_matvec_rls_unit_weight_matches_field_matvec():
+    # An all-ones weight map degenerates the weighted operator to the plain
+    # one, for both the RLS (wc=1) and JRLS (wc=C) weight shapes.
+    H, W, C = 6, 7, 2
+    x = torch.randn(H, W, C, dtype=torch.float64)
+    kw = dict(absolute=[0.3, 0.4], membrane=[1.0, 0.7], ndim=2)
+    expect = fft.field_matvec(x, **kw)
+    for wc in (1, C):
+        wgt = torch.ones(H, W, wc, dtype=torch.float64)
+        got = fft.field_matvec_rls(x, wgt, **kw)
+        assert torch.allclose(got, expect, atol=1e-10)
+
+
+def test_field_matvec_rls_gradcheck():
+    H, W, C = 5, 6, 2
+    x = torch.randn(H, W, C, dtype=torch.float64, requires_grad=True)
+    wgt = 0.5 + torch.rand(H, W, 1, dtype=torch.float64)
+    assert torch.autograd.gradcheck(
+        lambda z: fft.field_matvec_rls(
+            z, wgt, absolute=[0.3, 0.4], membrane=[1.0, 0.7], ndim=2
+        ),
+        (x,),
+        eps=1e-6,
+        atol=1e-4,
+    )
+
+
+def test_field_diag_rls_matches_matvec_rls_on_impulse():
+    H, W, C = 6, 7, 2
+    kw = dict(absolute=[0.3, 0.4], membrane=[1.0, 0.7], ndim=2)
+    wgt = 0.5 + torch.rand(H, W, 1, dtype=torch.float64)
+    d = fft.field_diag_rls(wgt, **kw)
+    assert tuple(d.shape) == (H, W, C)
+    i, j, c = 3, 3, 1
+    e = torch.zeros(H, W, C, dtype=torch.float64)
+    e[i, j, c] = 1.0
+    o = fft.field_matvec_rls(e, wgt, **kw)
+    assert torch.allclose(d[i, j, c], o[i, j, c], atol=1e-8)
+
+
+def test_field_relax_rls_solves_system():
+    # Mirrors test_field_relax_solves_system, through the weighted operator
+    # with an all-ones weight map (reduces to the unweighted system).
+    H, W, C, hdiag = 6, 7, 2, 6.0
+    hes = torch.zeros(H, W, C * (C + 1) // 2, dtype=torch.float64)
+    hes[..., 0] = hdiag
+    hes[..., 1] = hdiag
+    grd = torch.randn(H, W, C, dtype=torch.float64)
+    kw = dict(absolute=[0.3, 0.4], membrane=[0.7, 0.5], ndim=2)
+    wgt = torch.ones(H, W, 1, dtype=torch.float64)
+    sol = torch.zeros(H, W, C, dtype=torch.float64)
+    out = fft.field_relax_rls(sol, hes, grd, wgt, nb_iter=250, **kw)
+    assert out is sol  # in-place, warm-started
+    lx = fft.field_matvec_rls(sol, wgt, **kw)
+    rel = (hdiag * sol + lx - grd).norm() / grd.norm()
+    assert rel < 3e-3
+
+
 def test_field_accumulate_variants():
     H, W, C = 5, 6, 2
     field = torch.randn(H, W, C, dtype=torch.float64)
