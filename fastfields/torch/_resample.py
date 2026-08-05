@@ -46,7 +46,7 @@ from torch import Tensor
 
 from ._util import check_dtype, stream_ptr
 
-__all__ = ["resample", "restriction", "spline_coeff"]
+__all__ = ["resample", "restriction", "spline_coeff", "spline_coeff_"]
 
 
 def _effective_scale(
@@ -273,6 +273,40 @@ def spline_coeff(
     return _SplineCoeff.apply(inp, as_spline(order), as_bound(bound))
 
 
+def spline_coeff_(
+    inp: Tensor, order: int | str = 3, bound: int | str = "dct2"
+) -> Tensor:
+    """In-place interpolating spline-coefficient prefilter, last axis.
+
+    Differentiable with respect to ``inp`` (mirrors :func:`spline_coeff`):
+    the prefilter is linear and self-adjoint, so its backward applies the
+    same prefilter to the gradient and never reads the pre-mutation ``inp``
+    -- only the saved ``order``/``bound`` scalars -- so overwriting ``inp``
+    in place destroys no information backward needs (see
+    ``API_CONTRACT.md``, "In-place policy"). As with any in-place op, a leaf
+    tensor with ``requires_grad=True`` cannot be mutated (torch's ordinary
+    leaf rule).
+
+    Parameters
+    ----------
+    inp : torch.Tensor
+        Input samples, shape ``(..., N)``. Mutated in place and returned.
+    order : int or str, default=3
+        Spline order (orders 0 and 1 are no-ops); accepts an int, a
+        :class:`Spline` enum, or a name such as ``"cubic"``.
+    bound : int or str, default="dct2"
+        Boundary condition (int, a :class:`Bound` enum, or a name).
+
+    Returns
+    -------
+    torch.Tensor
+        ``inp`` (the same tensor object), now holding the spline
+        coefficients.
+    """
+    check_dtype(inp)
+    return _SplineCoeffInPlace.apply(inp, as_spline(order), as_bound(bound))
+
+
 def _do_resample(
     out: Tensor,
     inp: Tensor,
@@ -367,6 +401,35 @@ class _SplineCoeff(torch.autograd.Function):
         ctx.spline = spline
         ctx.bound = bound
         return out
+
+    @staticmethod
+    def backward(ctx, grad):
+        gout = None
+        if ctx.needs_input_grad[0]:
+            gout = grad.clone()
+            _fb.spline_coeff(
+                gout, ctx.spline, ctx.bound, stream=stream_ptr(gout)
+            )
+        return gout, None, None
+
+
+class _SplineCoeffInPlace(torch.autograd.Function):
+    """``inp <- spline_coeff(inp)`` in place.
+
+    Autograd-safe for the same reason as :class:`_SplineCoeff`: the
+    prefilter is self-adjoint and its backward only needs the saved
+    ``spline``/``bound`` scalars, never the pre-mutation ``inp`` --
+    ``ctx.mark_dirty(inp)`` bumps the version counter so a stale save
+    elsewhere raises instead of silently returning a wrong gradient.
+    """
+
+    @staticmethod
+    def forward(ctx, inp, spline, bound):
+        _fb.spline_coeff(inp, spline, bound, stream=stream_ptr(inp))
+        ctx.mark_dirty(inp)
+        ctx.spline = spline
+        ctx.bound = bound
+        return inp
 
     @staticmethod
     def backward(ctx, grad):

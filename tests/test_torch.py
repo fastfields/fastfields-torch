@@ -288,22 +288,210 @@ def test_dt_l1_values():
 
 
 # --------------------------------------------------------------------------- #
-# Non-differentiable ops must refuse grad
+# Non-differentiable ops: exposed, forward always runs, backward raises
 # --------------------------------------------------------------------------- #
+#
+# fastfields#4: these ops used to either reject a grad-requiring input at
+# *call* time (a ValueError from forward, before any graph existed) or --
+# for the in-place forms -- be omitted from torch entirely, "for autograd
+# reasons". Both were replaced by a single rule: forward always runs (so the
+# op can sit inside a larger graph), and only an actual ``.backward()`` call
+# that reaches the node raises -- a clear ``RuntimeError`` naming the op. See
+# ``API_CONTRACT.md``, "In-place policy".
 
 
-def test_nondiff_ops_reject_grad():
-    with pytest.raises(ValueError):
-        fft.sym_invert(torch.zeros(3, dtype=torch.float64, requires_grad=True))
-    with pytest.raises(ValueError):
-        fft.dt_euclidean(
-            torch.zeros(4, dtype=torch.float64, requires_grad=True)
-        )
-    # sym_solve must not backprop through the matrix.
+def _nonleaf(t):
+    """A non-leaf, grad-requiring view of ``t`` (safe to mutate in place,
+    unlike a leaf)."""
+    base = torch.zeros_like(t, requires_grad=True)
+    return base + t
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda x: fft.dt_euclidean(x),
+        lambda x: fft.dt_l1(x),
+        lambda x: fft.sym_invert(x),
+    ],
+    ids=["dt_euclidean", "dt_l1", "sym_invert"],
+)
+def test_nondiff_ops_forward_runs_even_when_input_requires_grad(call):
+    # sym_invert needs a valid packed matrix (len 3 == C=2); dt_* only cares
+    # about dtype, so a length-3 float64 tensor works for all three.
+    x = torch.tensor([1.0, 1.0, 0.0], dtype=torch.float64, requires_grad=True)
+    out = call(x)
+    assert out.requires_grad
+    assert out.grad_fn is not None
+
+
+@pytest.mark.parametrize(
+    "name,call",
+    [
+        ("dt_euclidean", lambda x: fft.dt_euclidean(x)),
+        ("dt_l1", lambda x: fft.dt_l1(x)),
+        ("sym_invert", lambda x: fft.sym_invert(x)),
+    ],
+)
+def test_nondiff_ops_backward_raises_clear_runtimeerror(name, call):
+    x = torch.tensor([1.0, 1.0, 0.0], dtype=torch.float64, requires_grad=True)
+    out = call(x)
+    with pytest.raises(RuntimeError, match=name):
+        out.sum().backward()
+
+
+@pytest.mark.parametrize(
+    "name,call",
+    [
+        ("dt_euclidean_", lambda x: fft.dt_euclidean_(x)),
+        ("dt_l1_", lambda x: fft.dt_l1_(x)),
+        ("sym_invert_", lambda x: fft.sym_invert_(x)),
+    ],
+)
+def test_nondiff_inplace_ops_backward_raises_clear_runtimeerror(name, call):
+    x = _nonleaf(torch.tensor([1.0, 1.0, 0.0], dtype=torch.float64))
+    out = call(x)
+    assert out is x
+    assert out.requires_grad
+    with pytest.raises(RuntimeError, match=name):
+        out.sum().backward()
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda x: fft.dt_euclidean_(x),
+        lambda x: fft.dt_l1_(x),
+        lambda x: fft.sym_invert_(x),
+    ],
+)
+def test_nondiff_inplace_ops_reject_leaf_requiring_grad(call):
+    """Torch's ordinary leaf rule still applies -- same as ``Tensor.add_``."""
+    x = torch.tensor([1.0, 1.0, 0.0], dtype=torch.float64, requires_grad=True)
+    with pytest.raises(RuntimeError, match="leaf Variable"):
+        call(x)
+
+
+def test_dt_mesh_backward_raises_clear_runtimeerror(monkeypatch):
+    # dt_mesh's real shape contract is finicky (see
+    # test_dt_mesh_normalizes_faces_to_int64) -- stub the binding so this
+    # test exercises only the autograd wiring we own (_DtMesh).
+    import fastfields.torch._dt as dtmod
+
+    def spy(dist, nearest, loc, vertices, faces, signed, naive, stream=0):
+        dist.fill_(1.0)
+        if nearest is not None:
+            nearest.fill_(0)
+
+    monkeypatch.setattr(dtmod._fb, "dt_mesh", spy)
+
+    loc = torch.zeros(1, 3, dtype=torch.float32, requires_grad=True)
+    verts = torch.zeros(1, 3, 3, dtype=torch.float32)
+    faces = torch.tensor([[[0, 1, 2]]], dtype=torch.int64)
+
+    dist = fft.dt_mesh(loc, verts, faces)
+    assert dist.requires_grad
+    with pytest.raises(RuntimeError, match="dt_mesh"):
+        dist.sum().backward()
+
+    # Same guarantee when return_nearest=True (two forward outputs).
+    dist2, nearest = fft.dt_mesh(loc, verts, faces, return_nearest=True)
+    assert dist2.requires_grad
+    with pytest.raises(RuntimeError, match="dt_mesh"):
+        dist2.sum().backward()
+
+
+def test_sym_solve_matrix_grad_still_rejected_at_forward():
+    # Unlike the ops above, sym_solve *is* differentiable (wrt vec) -- but it
+    # never backprops through `mat`, and that check is unrelated to the
+    # non-differentiable-op pattern above: it fires at forward time because
+    # passing a grad-requiring `mat` is a caller error, not a case where a
+    # graph should form and fail later. Unchanged by fastfields#4.
     mat = torch.randn(3, dtype=torch.float64, requires_grad=True)
     vec = torch.randn(2, dtype=torch.float64)
     with pytest.raises(ValueError):
         fft.sym_solve(mat, vec)
+    with pytest.raises(ValueError):
+        fft.sym_solve_(vec.clone(), mat)
+
+
+# --------------------------------------------------------------------------- #
+# New in-place, autograd-safe ops (fastfields#4): sym_solve_, spline_coeff_
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("C", [2, 3])
+def test_gradcheck_sym_solve_inplace(C):
+    mat = random_spd((3,), C, dtype=torch.float64)
+    vec = torch.randn(3, C, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(
+        lambda v: fft.sym_solve_(v.clone(), mat), (vec,)
+    )
+
+
+def test_sym_solve_inplace_matches_out_of_place():
+    mat = random_spd((5,), 3, dtype=torch.float64)
+    vec = torch.randn(5, 3, dtype=torch.float64)
+    oop = fft.sym_solve(mat, vec)
+    ip_buf = vec.clone()
+    ip = fft.sym_solve_(ip_buf, mat)
+    assert ip is ip_buf
+    assert torch.allclose(ip, oop, atol=1e-4, rtol=1e-3)
+
+
+def test_sym_solve_inplace_bumps_version_counter():
+    mat = random_spd((3,), 2, dtype=torch.float64)
+    x = torch.randn(3, 2, dtype=torch.float64, requires_grad=True)
+    y = x * 1.0
+    v0 = y._version
+    fft.sym_solve_(y, mat)
+    assert y._version > v0
+
+
+def test_sym_solve_inplace_rejects_leaf_requiring_grad():
+    mat = random_spd((2,), 2, dtype=torch.float64)
+    leaf = torch.randn(2, 2, dtype=torch.float64, requires_grad=True)
+    with pytest.raises(RuntimeError, match="leaf Variable"):
+        fft.sym_solve_(leaf, mat)
+
+
+def test_gradcheck_spline_coeff_inplace():
+    x = torch.randn(2, 7, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(
+        lambda t: fft.spline_coeff_(t.clone(), 3, 3), (x,)
+    )
+
+
+def test_spline_coeff_inplace_matches_out_of_place():
+    x = torch.randn(2, 9, dtype=torch.float64)
+    oop = fft.spline_coeff(x, 3, "dct2")
+    ip_buf = x.clone()
+    ip = fft.spline_coeff_(ip_buf, 3, "dct2")
+    assert ip is ip_buf
+    assert torch.allclose(ip, oop)
+
+
+def test_spline_coeff_inplace_rejects_leaf_requiring_grad():
+    leaf = torch.randn(2, 7, dtype=torch.float64, requires_grad=True)
+    with pytest.raises(RuntimeError, match="leaf Variable"):
+        fft.spline_coeff_(leaf, 3, "dct2")
+
+
+# --------------------------------------------------------------------------- #
+# API parity with numpy/cupy (fastfields#4): every op is now on torch too
+# --------------------------------------------------------------------------- #
+
+
+def test_nondiff_and_inplace_ops_present_on_torch():
+    for name in (
+        "dt_euclidean_",
+        "dt_l1_",
+        "sym_invert_",
+        "sym_solve_",
+        "spline_coeff_",
+    ):
+        assert hasattr(fft, name), f"fastfields.torch.{name} is missing"
+        assert name in fft.__all__, f"{name!r} missing from __all__"
 
 
 # --------------------------------------------------------------------------- #

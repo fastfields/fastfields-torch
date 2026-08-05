@@ -9,14 +9,26 @@ Differentiable (``torch.autograd.Function``-backed):
 
 - :func:`sym_matvec` -- ``mat @ vec`` (grad wrt ``mat`` and ``vec``)
 - :func:`sym_solve`  -- ``(mat + diag(weight)) \\ vec`` (grad wrt ``vec``)
+- :func:`sym_solve_` -- in-place :func:`sym_solve` (grad wrt the mutated
+  right-hand side; safe under autograd, see ``API_CONTRACT.md``)
 - :func:`resample`   -- spline prolongation (backward: ``restriction``)
 - :func:`restriction`-- adjoint of resample (backward: ``resample``)
 - :func:`spline_coeff` -- interpolating-coefficient prefilter
+- :func:`spline_coeff_` -- in-place :func:`spline_coeff` (self-adjoint, safe
+  under autograd)
 
-Non-differentiable (raise if an input requires grad):
+Not differentiable, but still exposed for parity with
+``fastfields.numpy``/``fastfields.cupy``: forward always runs (even when an
+input requires grad), and only calling ``.backward()`` through the output
+raises a clear ``RuntimeError`` naming the op -- see each function's
+docstring, and ``API_CONTRACT.md`` ("In-place policy") for why this differs
+from earlier revisions that omitted these ops or rejected grad-requiring
+inputs at call time:
 
-- :func:`sym_invert`
-- :func:`dt_euclidean`, :func:`dt_l1`, :func:`dt_mesh`
+- :func:`dt_euclidean`, :func:`dt_euclidean_`
+- :func:`dt_l1`, :func:`dt_l1_`
+- :func:`dt_mesh` (no in-place form on any backend)
+- :func:`sym_invert`, :func:`sym_invert_`
 
 Re-exported enums: :class:`Spline`, :class:`Bound`.
 
@@ -30,7 +42,7 @@ from __future__ import annotations
 
 from fastfields.dlpack import Bound, Spline
 
-from ._dt import dt_euclidean, dt_l1, dt_mesh
+from ._dt import dt_euclidean, dt_euclidean_, dt_l1, dt_l1_, dt_mesh
 from ._pushpull import count, grad, pull, push
 from ._reg import (
     field_adddiag,
@@ -38,8 +50,8 @@ from ._reg import (
     field_addmatvec,
     field_addmatvec_,
     field_diag,
-    field_forward,
     field_diag_rls,
+    field_forward,
     field_kernel,
     field_matvec,
     field_matvec_rls,
@@ -65,18 +77,23 @@ from ._reg import (
     flow_submatvec,
     flow_submatvec_,
 )
-from ._resample import resample, restriction, spline_coeff
-from ._sym import sym_invert, sym_matvec, sym_solve
+from ._resample import resample, restriction, spline_coeff, spline_coeff_
+from ._sym import sym_invert, sym_invert_, sym_matvec, sym_solve, sym_solve_
 
 __all__ = [
     "sym_matvec",
     "sym_solve",
+    "sym_solve_",
     "sym_invert",
+    "sym_invert_",
     "resample",
     "restriction",
     "spline_coeff",
+    "spline_coeff_",
     "dt_euclidean",
+    "dt_euclidean_",
     "dt_l1",
+    "dt_l1_",
     "dt_mesh",
     "pull",
     "push",

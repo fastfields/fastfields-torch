@@ -10,6 +10,24 @@ triangle, e.g. for ``C == 3``::
 
 These wrappers mirror the autograd structure of ``jitfields/jitfields/sym.py``
 (classes ``MatVec`` and ``Solve``).
+
+In-place (``_``-suffixed) forms mirror the numpy/cupy convention
+(``sym_solve_(inp_out, mat, weight=None)``, ``sym_invert_(mat)`` -- note the
+argument order matches numpy/cupy exactly, which is *not* the same order as
+the out-of-place ``sym_solve(mat, vec, weight=None)``). Whether an in-place
+form is differentiable follows the per-op rule in ``API_CONTRACT.md``
+("In-place policy"):
+
+* :func:`sym_solve_` **is** differentiable (w.r.t. the mutated right-hand
+  side): the backward of :func:`sym_solve` never reads the pre-mutation
+  right-hand side, only the saved ``mat``/``weight``, so overwriting it in
+  place destroys no information backward needs.
+* :func:`sym_invert_` is **not** differentiable, for two independent
+  reasons: the inverse is nonlinear in ``mat`` (a correct backward would
+  need the pre-inversion matrix -- gone once mutated in place) *and* no
+  gradient is implemented for :func:`sym_invert` (its out-of-place form) on
+  this backend at all, mirroring ``jitfields``. Calling ``.backward()``
+  through either form's output raises ``RuntimeError``.
 """
 
 from __future__ import annotations
@@ -22,9 +40,15 @@ import fastfields.dlpack as _fb
 import torch
 from torch import Tensor
 
-from ._util import check_dtype, stream_ptr
+from ._util import check_dtype, raise_not_differentiable, stream_ptr
 
-__all__ = ["sym_matvec", "sym_solve", "sym_invert"]
+__all__ = [
+    "sym_matvec",
+    "sym_solve",
+    "sym_solve_",
+    "sym_invert",
+    "sym_invert_",
+]
 
 
 def _channels_from_packed(packed_len: int) -> int:
@@ -116,6 +140,7 @@ def sym_solve(
     Differentiable with respect to ``vec`` (and ``weight`` is treated as a
     constant). As in ``jitfields``, the solve does **not** backpropagate
     through ``mat``: pass a matrix that does not require grad (detach it).
+    See :func:`sym_solve_` for the in-place variant.
 
     Parameters
     ----------
@@ -151,23 +176,116 @@ def sym_solve(
     return _Solve.apply(mat, vec, weight)
 
 
+def sym_solve_(
+    inp_out: Tensor, mat: Tensor, weight: Optional[Tensor] = None
+) -> Tensor:
+    """In-place solve: ``inp_out <- (mat + diag(weight)) \\ inp_out``.
+
+    Note the argument order -- ``inp_out`` first, then ``mat`` -- matches the
+    numpy/cupy ``sym_solve_`` convention, not :func:`sym_solve`'s
+    ``(mat, vec, ...)`` order.
+
+    Differentiable with respect to ``inp_out`` (mirrors :func:`sym_solve`);
+    ``weight`` is a constant and ``mat`` must not require grad (as in
+    :func:`sym_solve`). Safe under autograd: the backward of
+    :func:`sym_solve` never reads the pre-mutation right-hand side -- only
+    the saved ``mat``/``weight`` -- so overwriting ``inp_out`` in place
+    destroys no information backward needs (see ``API_CONTRACT.md``,
+    "In-place policy"). As with any in-place op, a leaf tensor with
+    ``requires_grad=True`` cannot be mutated (torch's ordinary leaf rule).
+
+    Parameters
+    ----------
+    inp_out : `(..., C) tensor`
+        Right-hand side on input, solution on output. Mutated in place and
+        returned; fixes the batch (leading) shape.
+    mat : `(..., C*(C+1)//2) tensor`
+        Compact-symmetric matrix, broadcast to ``inp_out``'s batch shape.
+        Must not require grad.
+    weight : `(..., C) tensor`, optional
+        Diagonal regularizer added to ``mat``, broadcast to ``inp_out``'s
+        batch shape.
+
+    Returns
+    -------
+    out : `(..., C) tensor`
+        ``inp_out`` (the same tensor object), now holding the solution.
+
+    Raises
+    ------
+    ValueError
+        If ``mat`` requires grad, or channel counts disagree.
+    """
+    check_dtype(mat, inp_out)
+    if weight is not None:
+        check_dtype(weight)
+    c = _check_sym(mat, inp_out)
+    if weight is not None and weight.shape[-1] != c:
+        raise ValueError(
+            f"weight has {weight.shape[-1]} channels but the packed matrix "
+            f"encodes {c} channels"
+        )
+    batch = inp_out.shape[:-1]
+    mat = mat.expand(*batch, mat.shape[-1])
+    if weight is not None:
+        weight = weight.expand(*batch, weight.shape[-1])
+    return _SolveInPlace.apply(inp_out, mat, weight)
+
+
 def sym_invert(mat: Tensor) -> Tensor:
     """Invert a compact-symmetric matrix (``out = inv(mat)``).
 
-    Not differentiable: raises if ``mat`` requires grad (mirrors jitfields).
+    Not differentiable -- calling ``.backward()`` through this raises
+    ``RuntimeError``. Forward still runs normally (including when ``mat``
+    requires grad); only an actual backward call fails. See
+    :func:`sym_invert_` for the in-place variant.
+
+    Parameters
+    ----------
+    mat : `(..., C*(C+1)//2) tensor`
+        Compact-symmetric matrix.
+
+    Returns
+    -------
+    out : `(..., C*(C+1)//2) tensor`
+        The packed inverse, same shape as ``mat``.
+
+    Raises
+    ------
+    RuntimeError
+        If ``.backward()`` is called through the output.
     """
     check_dtype(mat)
-    if mat.requires_grad:
-        raise ValueError(
-            "sym_invert does not backpropagate gradients through the matrix. "
-            "Use `mat.detach()`."
-        )
-    # mat is a read-only input: the stride-aware binding reads it zero-copy, so
-    # we do NOT force contiguity. The output must be a real contiguous buffer
-    # (new_empty is contiguous even when mat is strided).
-    out = mat.new_empty(mat.shape)
-    _fb.sym_invert(out, mat, stream=stream_ptr(mat))
-    return out
+    return _Invert.apply(mat)
+
+
+def sym_invert_(mat: Tensor) -> Tensor:
+    """In-place invert a compact-symmetric matrix (``mat <- inv(mat)``).
+
+    Not differentiable -- calling ``.backward()`` through this raises
+    ``RuntimeError`` (mirrors :func:`sym_invert`; the inverse is nonlinear
+    in ``mat``, so a correct backward would additionally need the
+    pre-inversion matrix, which an in-place write has already destroyed). As
+    with any in-place op, a leaf tensor with ``requires_grad=True`` cannot
+    be mutated (torch's ordinary leaf rule).
+
+    Parameters
+    ----------
+    mat : `(..., C*(C+1)//2) tensor`
+        Compact-symmetric matrix. Mutated in place and returned.
+
+    Returns
+    -------
+    out : `(..., C*(C+1)//2) tensor`
+        ``mat`` (the same tensor object), now holding its packed inverse.
+
+    Raises
+    ------
+    RuntimeError
+        If ``.backward()`` is called through the output.
+    """
+    check_dtype(mat)
+    return _InvertInPlace.apply(mat)
 
 
 class _MatVec(torch.autograd.Function):
@@ -238,3 +356,85 @@ class _Solve(torch.autograd.Function):
             else:
                 _fb.sym_solve(gvec, mat, grad, weight, stream=s)
         return None, gvec, None
+
+
+class _SolveInPlace(torch.autograd.Function):
+    """``inp_out <- (mat + diag(weight)) \\ inp_out`` in place.
+
+    Autograd-safe: the backward below is identical to :class:`_Solve`'s and
+    never reads the pre-mutation ``inp_out`` -- only the saved ``mat``/
+    ``weight`` -- so mutating ``inp_out`` in place loses nothing backward
+    needs. ``ctx.mark_dirty(inp_out)`` bumps its version counter so that if
+    some other op had saved ``inp_out`` for its own backward, autograd
+    raises instead of silently computing a wrong gradient.
+    """
+
+    @staticmethod
+    def forward(ctx, inp_out, mat, weight):
+        if mat.requires_grad:
+            raise ValueError(
+                "sym_solve_ does not backpropagate gradients through the "
+                "matrix. Use `mat.detach()`."
+            )
+        s = stream_ptr(inp_out)
+        _fb.sym_solve_(inp_out, mat, weight, stream=s)
+        ctx.mark_dirty(inp_out)
+        ctx.save_for_backward(mat, weight)
+        return inp_out
+
+    @staticmethod
+    def backward(ctx, grad):
+        mat, weight = ctx.saved_tensors
+        ginp = None
+        if ctx.needs_input_grad[0]:
+            ginp = grad.new_empty(grad.shape)
+            s = stream_ptr(ginp)
+            if weight is None:
+                _fb.sym_solve(ginp, mat, grad, stream=s)
+            else:
+                _fb.sym_solve(ginp, mat, grad, weight, stream=s)
+        return ginp, None, None
+
+
+class _Invert(torch.autograd.Function):
+    """``out = inv(mat)`` (out-of-place, ``mat`` left untouched)."""
+
+    @staticmethod
+    def forward(ctx, mat):
+        # mat is a read-only input: the stride-aware binding reads it
+        # zero-copy, so we do NOT force contiguity. The output must be a
+        # real contiguous buffer (new_empty is contiguous even when mat is
+        # strided).
+        out = mat.new_empty(mat.shape)
+        _fb.sym_invert(out, mat, stream=stream_ptr(mat))
+        return out
+
+    @staticmethod
+    def backward(ctx, grad):
+        raise_not_differentiable(
+            "sym_invert",
+            "the packed-matrix inverse has no gradient implemented on this "
+            "backend (mirrors jitfields); it is also nonlinear in `mat`, so "
+            "a correct backward would need the pre-inversion matrix.",
+        )
+
+
+class _InvertInPlace(torch.autograd.Function):
+    """``mat <- inv(mat)`` in place."""
+
+    @staticmethod
+    def forward(ctx, mat):
+        _fb.sym_invert_(mat, stream=stream_ptr(mat))
+        ctx.mark_dirty(mat)
+        return mat
+
+    @staticmethod
+    def backward(ctx, grad):
+        raise_not_differentiable(
+            "sym_invert_",
+            "the packed-matrix inverse is nonlinear in `mat`, so a correct "
+            "backward would need the pre-inversion matrix -- already "
+            "overwritten by this in-place op -- and no gradient is "
+            "implemented for sym_invert on this backend anyway (mirrors "
+            "jitfields).",
+        )
