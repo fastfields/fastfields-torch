@@ -35,6 +35,9 @@ __all__ = [
     "field_subdiag_",
     "field_kernel",
     "field_relax",
+    "field_matvec_rls",
+    "field_diag_rls",
+    "field_relax_rls",
     "field_precond",
     "field_forward",
     "flow_matvec",
@@ -182,6 +185,59 @@ class _FlowMatvec(torch.autograd.Function):
                 stream=stream_ptr(ginp),
             )
         return ginp, None, None, None, None, None, None, None, None
+
+
+class _FieldMatvecRLS(torch.autograd.Function):
+    """RLS/JRLS-weighted variant of ``_FieldMatvec``.
+
+    Differentiable wrt ``inp`` only -- ``wgt`` is treated as a fixed
+    coefficient field (like ``bound``/``ndim``), exactly as ``field_diag``
+    has no differentiable input. For a *fixed* weight map, ``L(w)`` is still
+    self-adjoint, so the backward pass is the same weighted matvec applied to
+    ``grad_out``.
+    """
+
+    @staticmethod
+    def forward(
+        ctx, inp, wgt, voxel_size, absolute, membrane, bending, bound, ndim
+    ):
+        out = inp.new_zeros(inp.shape)
+        _fb.field_matvec_rls(
+            out,
+            inp,
+            wgt,
+            voxel_size=voxel_size,
+            absolute=absolute,
+            membrane=membrane,
+            bending=bending,
+            bound=bound,
+            ndim=ndim,
+            stream=stream_ptr(out),
+        )
+        ctx.save_for_backward(wgt)
+        ctx.args = (voxel_size, absolute, membrane, bending, bound, ndim)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        ginp = None
+        if ctx.needs_input_grad[0]:
+            (wgt,) = ctx.saved_tensors
+            vs, ab, mem, ben, bnd, ndim = ctx.args
+            ginp = grad_out.new_zeros(grad_out.shape)
+            _fb.field_matvec_rls(
+                ginp,
+                grad_out.contiguous(),
+                wgt,
+                voxel_size=vs,
+                absolute=ab,
+                membrane=mem,
+                bending=ben,
+                bound=bnd,
+                ndim=ndim,
+                stream=stream_ptr(ginp),
+            )
+        return ginp, None, None, None, None, None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -709,6 +765,125 @@ def field_relax(
         field,
         hes.contiguous(),
         grd.contiguous(),
+        voxel_size=_voxel(voxel_size, ndim),
+        absolute=_per_channel(absolute, channels, "absolute"),
+        membrane=_per_channel(membrane, channels, "membrane"),
+        bending=_per_channel(bending, channels, "bending"),
+        bound=as_bound(bound),
+        ndim=ndim,
+        nb_iter=int(nb_iter),
+        stream=stream_ptr(field),
+    )
+    return field
+
+
+def field_matvec_rls(
+    inp: Tensor,
+    wgt: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """RLS/JRLS-weighted variant of :func:`field_matvec`.
+
+    ``wgt`` has shape ``(*batch, *spatial, 1)`` for a single weight shared
+    across all channels (RLS), or ``(*batch, *spatial, C)`` for a genuine
+    per-channel weight (JRLS, ``C`` matching ``inp``'s channel count) --
+    the trailing dimension of ``wgt`` selects which mode is used.
+    Differentiable wrt ``inp`` (``wgt`` is treated as fixed).
+    """
+    check_dtype(inp)
+    channels = inp.shape[-1]
+    return _FieldMatvecRLS.apply(
+        inp,
+        wgt,
+        _voxel(voxel_size, ndim),
+        _per_channel(absolute, channels, "absolute"),
+        _per_channel(membrane, channels, "membrane"),
+        _per_channel(bending, channels, "bending"),
+        as_bound(bound),
+        ndim,
+    )
+
+
+def field_diag_rls(
+    wgt: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    channels: int | None = None,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+    dtype: torch.dtype = torch.float64,
+    device=None,
+) -> Tensor:
+    """Diagonal (preconditioner) of :func:`field_matvec_rls`.
+
+    ``wgt`` selects RLS (trailing dim 1) vs JRLS (trailing dim ``C``), same
+    as :func:`field_matvec_rls`. The output channel count ``C`` is taken
+    from ``channels`` if given, else from ``wgt``'s trailing dimension when
+    it is not 1 (JRLS), else inferred from the per-channel penalty lengths
+    (default 1), exactly as :func:`field_kernel` does. Not differentiable.
+    """
+    if channels is None:
+        channels = (
+            wgt.shape[-1]
+            if wgt.shape[-1] != 1
+            else _field_channels(None, absolute, membrane, bending)
+        )
+    out = torch.zeros(
+        tuple(wgt.shape[:-1]) + (channels,),
+        dtype=dtype,
+        device=device if device is not None else wgt.device,
+    )
+    _fb.field_diag_rls(
+        out,
+        wgt,
+        voxel_size=_voxel(voxel_size, ndim),
+        absolute=_per_channel(absolute, channels, "absolute"),
+        membrane=_per_channel(membrane, channels, "membrane"),
+        bending=_per_channel(bending, channels, "bending"),
+        bound=as_bound(bound),
+        ndim=ndim,
+        stream=stream_ptr(out),
+    )
+    return out
+
+
+def field_relax_rls(
+    field: Tensor,
+    hes: Tensor,
+    grd: Tensor,
+    wgt: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+    nb_iter: int = 1,
+) -> Tensor:
+    """RLS/JRLS-weighted variant of :func:`field_relax`.
+
+    Refines ``field`` in place with ``nb_iter`` relaxation sweeps of
+    ``(H + L(w)) x = g``, same ``wgt`` conventions as
+    :func:`field_matvec_rls`. Not differentiable (an in-place iterative
+    solver); ``field`` is the warm start, mutated and returned.
+    """
+    check_dtype(field)
+    channels = field.shape[-1]
+    _fb.field_relax_rls(
+        field,
+        hes.contiguous(),
+        grd.contiguous(),
+        wgt.contiguous(),
         voxel_size=_voxel(voxel_size, ndim),
         absolute=_per_channel(absolute, channels, "absolute"),
         membrane=_per_channel(membrane, channels, "membrane"),
