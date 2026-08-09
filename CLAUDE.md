@@ -21,7 +21,8 @@ mirrors `jitfields` (`sym.py`, `resize.py`, `splinc.py`).
   `sym_matvec`/`sym_matvec_backward`), `sym_solve` (w.r.t. `vec`, self-adjoint),
   `sym_solve_` (in-place, same gradient as `sym_solve` — backward never reads
   the pre-mutation value), `resample` / `restriction` (each other's adjoint at
-  reciprocal scale), `spline_coeff` / `spline_coeff_` (self-adjoint).
+  reciprocal scale), `spline_coeff` / `spline_coeff_` (backward applies the prefilter
+  transpose; only bounds dct1/dct2/dft/replicate are accepted).
 - **Not differentiable, but still exposed** (parity with `fastfields.numpy`/
   `fastfields.cupy`): `dt_euclidean` / `dt_euclidean_`, `dt_l1` / `dt_l1_`,
   `dt_mesh` (no in-place form), `sym_invert` / `sym_invert_`. Forward always

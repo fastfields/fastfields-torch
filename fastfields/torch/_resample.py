@@ -12,8 +12,11 @@ the spirit of ``jitfields`` ``resize.py`` where the backward of ``resize`` is
 
 i.e. the adjoint uses the **reciprocal** scale and the **same** shift, with the
 input/output shapes swapped. The backward passes below implement exactly that.
-The spline-coefficient prefilter is linear and self-adjoint, so its backward
-applies the same prefilter to the gradient.
+The spline-coefficient prefilter is linear, so its backward applies the
+transpose of the prefilter to the gradient. That transpose is the prefilter
+itself for ``replicate``/``dct2``/``dft``, but **not** for ``dct1``, whose
+operator is only self-adjoint under the endpoint-weighted inner product
+``W = diag(1/2, 1, ..., 1, 1/2)`` -- see ``_spline_coeff_adjoint``.
 
 Notes
 -----
@@ -33,6 +36,7 @@ from typing import Optional, Sequence
 
 import fastfields.dlpack as _fb
 from fastfields.dlpack import (
+    Bound,
     anchor_scale_shift,
     as_bound,
     as_spline,
@@ -44,7 +48,7 @@ from fastfields.dlpack import (
 import torch
 from torch import Tensor
 
-from ._util import check_dtype, stream_ptr
+from ._util import check_dtype, check_inplace_leaf, stream_ptr
 
 __all__ = ["resample", "restriction", "spline_coeff", "spline_coeff_"]
 
@@ -251,7 +255,10 @@ def spline_coeff(
     """Compute interpolating spline coefficients along the last axis.
 
     Returns a new tensor (does not modify ``inp``), so it is safe for autograd.
-    Differentiable with respect to ``inp``.
+    Differentiable with respect to ``inp``. Only the boundary conditions the
+    prefilter implements are accepted (``dct1``/``dct2``/``dft``/
+    ``replicate``); anything else -- in particular ``zero``, which the
+    binding silently treats as ``dct1`` -- raises ``ValueError``.
 
     Parameters
     ----------
@@ -270,7 +277,9 @@ def spline_coeff(
         Spline coefficients, shape ``(..., N)``.
     """
     check_dtype(inp)
-    return _SplineCoeff.apply(inp, as_spline(order), as_bound(bound))
+    spline, bound = as_spline(order), as_bound(bound)
+    _check_splinc_bound(spline, bound)
+    return _SplineCoeff.apply(inp, spline, bound)
 
 
 def spline_coeff_(
@@ -279,13 +288,26 @@ def spline_coeff_(
     """In-place interpolating spline-coefficient prefilter, last axis.
 
     Differentiable with respect to ``inp`` (mirrors :func:`spline_coeff`):
-    the prefilter is linear and self-adjoint, so its backward applies the
-    same prefilter to the gradient and never reads the pre-mutation ``inp``
-    -- only the saved ``order``/``bound`` scalars -- so overwriting ``inp``
-    in place destroys no information backward needs (see
-    ``API_CONTRACT.md``, "In-place policy"). As with any in-place op, a leaf
-    tensor with ``requires_grad=True`` cannot be mutated (torch's ordinary
-    leaf rule).
+    the prefilter is linear, so its backward applies the prefilter's
+    transpose to the gradient and never reads the pre-mutation ``inp`` --
+    only the saved ``order``/``bound`` scalars -- so overwriting ``inp`` in
+    place destroys no information backward needs (see ``API_CONTRACT.md``,
+    "In-place policy"). As with any in-place op, a leaf tensor with
+    ``requires_grad=True`` cannot be mutated (torch's ordinary leaf rule);
+    that is checked before ``inp`` is touched, so the call raises without
+    corrupting it.
+
+    Only the boundary conditions the prefilter actually implements are
+    accepted (``dct1``/``dct2``/``dft``/``replicate``); anything else -- in
+    particular ``zero``, which the binding silently treats as ``dct1`` --
+    raises ``ValueError``.
+
+    Raises
+    ------
+    ValueError
+        If ``bound`` is not an implemented boundary condition.
+    RuntimeError
+        If ``inp`` is a leaf tensor that requires grad.
 
     Parameters
     ----------
@@ -304,7 +326,98 @@ def spline_coeff_(
         coefficients.
     """
     check_dtype(inp)
-    return _SplineCoeffInPlace.apply(inp, as_spline(order), as_bound(bound))
+    check_inplace_leaf("spline_coeff_", inp)
+    spline, bound = as_spline(order), as_bound(bound)
+    _check_splinc_bound(spline, bound)
+    return _SplineCoeffInPlace.apply(inp, spline, bound)
+
+
+# --------------------------------------------------------------------------- #
+# spline_coeff: supported bounds, and the adjoint used by backward
+# --------------------------------------------------------------------------- #
+#
+# The prefilter is linear, so its backward is the transpose of the operator
+# ``M`` it applies. Whether ``M`` is *symmetric* -- i.e. whether the backward
+# may simply re-apply the same prefilter -- depends on the boundary condition,
+# and it is NOT symmetric for every bound the binding accepts:
+#
+#   bound       max|M - M^T|   backward = prefilter(grad)?
+#   replicate   ~1e-16         yes (symmetric)
+#   dct2        ~1e-16         yes (symmetric)
+#   dft         ~1e-16         yes (symmetric)
+#   dct1        O(1)           NO -- needs the weighted adjoint below
+#
+# For DCT-I (whole-point symmetry) the endpoints are shared by the mirrored
+# extension, so ``M`` is self-adjoint with respect to the weighted inner
+# product ``W = diag(1/2, 1, ..., 1, 1/2)`` rather than the plain Euclidean
+# one: ``W M == (W M)^T``, hence ``M^T == W M W^-1``. Re-applying the plain
+# prefilter there returns a *silently wrong* gradient (verified: the error is
+# O(1) and does not shrink with the axis length).
+_BOUND_DCT1 = int(Bound.DCT1)
+
+# Bounds the prefilter is actually implemented for (mirrors jitfields'
+# ``splinc.checkbound``). Everything else either raises inside the binding
+# (dst1/dst2/nocheck) or -- for ``zero`` -- is silently treated as ``dct1``,
+# which would hand back results for a boundary condition the caller did not
+# ask for. Reject those up front instead.
+_SPLINC_BOUNDS_OK = (
+    int(Bound.DCT1),
+    int(Bound.DCT2),
+    int(Bound.DFT),
+    int(Bound.Replicate),
+)
+
+
+def _check_splinc_bound(spline: int, bound: int) -> None:
+    """Reject boundary conditions the prefilter does not implement.
+
+    Orders 0 and 1 make the prefilter the identity, so the bound is
+    irrelevant there (same carve-out as jitfields).
+
+    Raises
+    ------
+    ValueError
+        If ``bound`` is not one of the implemented boundary conditions.
+    """
+    if spline <= 1 or bound in _SPLINC_BOUNDS_OK:
+        return
+    ok = ", ".join(Bound(b).name.lower() for b in _SPLINC_BOUNDS_OK)
+    raise ValueError(
+        f"spline_coeff is only implemented for bounds ({ok}), got "
+        f"{Bound(bound).name.lower()!r}."
+    )
+
+
+def _spline_coeff_adjoint(grad: Tensor, spline: int, bound: int) -> Tensor:
+    """Apply the transpose of the prefilter to ``grad`` (a new tensor).
+
+    Parameters
+    ----------
+    grad : torch.Tensor
+        Incoming gradient, shape ``(..., N)``.
+    spline : int
+        Spline order (already resolved to an int).
+    bound : int
+        Boundary condition (already resolved to an int).
+
+    Returns
+    -------
+    torch.Tensor
+        ``M^T @ grad``, where ``M`` is the prefilter applied by forward.
+    """
+    gout = grad.clone()
+    if bound == _BOUND_DCT1:
+        # M^T = W M W^-1 with W = diag(1/2, 1, ..., 1, 1/2). Orders <= 1 make
+        # the prefilter the identity, and the two scalings then cancel, so
+        # this stays correct there too.
+        gout[..., 0] *= 2.0
+        gout[..., -1] *= 2.0
+        _fb.spline_coeff(gout, spline, bound, stream=stream_ptr(gout))
+        gout[..., 0] *= 0.5
+        gout[..., -1] *= 0.5
+    else:
+        _fb.spline_coeff(gout, spline, bound, stream=stream_ptr(gout))
+    return gout
 
 
 def _do_resample(
@@ -406,10 +519,7 @@ class _SplineCoeff(torch.autograd.Function):
     def backward(ctx, grad):
         gout = None
         if ctx.needs_input_grad[0]:
-            gout = grad.clone()
-            _fb.spline_coeff(
-                gout, ctx.spline, ctx.bound, stream=stream_ptr(gout)
-            )
+            gout = _spline_coeff_adjoint(grad, ctx.spline, ctx.bound)
         return gout, None, None
 
 
@@ -417,7 +527,7 @@ class _SplineCoeffInPlace(torch.autograd.Function):
     """``inp <- spline_coeff(inp)`` in place.
 
     Autograd-safe for the same reason as :class:`_SplineCoeff`: the
-    prefilter is self-adjoint and its backward only needs the saved
+    prefilter is linear and its backward only needs the saved
     ``spline``/``bound`` scalars, never the pre-mutation ``inp`` --
     ``ctx.mark_dirty(inp)`` bumps the version counter so a stale save
     elsewhere raises instead of silently returning a wrong gradient.
@@ -435,8 +545,5 @@ class _SplineCoeffInPlace(torch.autograd.Function):
     def backward(ctx, grad):
         gout = None
         if ctx.needs_input_grad[0]:
-            gout = grad.clone()
-            _fb.spline_coeff(
-                gout, ctx.spline, ctx.bound, stream=stream_ptr(gout)
-            )
+            gout = _spline_coeff_adjoint(grad, ctx.spline, ctx.bound)
         return gout, None, None

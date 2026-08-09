@@ -26,7 +26,12 @@ import fastfields.dlpack as _fb
 import torch
 from torch import Tensor
 
-from ._util import check_dtype, raise_not_differentiable, stream_ptr
+from ._util import (
+    check_dtype,
+    check_inplace_leaf,
+    raise_not_differentiable,
+    stream_ptr,
+)
 
 __all__ = [
     "dt_euclidean",
@@ -132,6 +137,7 @@ def dt_euclidean_(inp: Tensor, voxel_spacing: float = 1.0) -> Tensor:
         If ``.backward()`` is called through the output.
     """
     check_dtype(inp)
+    check_inplace_leaf("dt_euclidean_", inp)
     return _DtEuclidean_.apply(inp, voxel_spacing)
 
 
@@ -226,6 +232,7 @@ def dt_l1_(inp: Tensor, voxel_spacing: float = 1.0) -> Tensor:
         If ``.backward()`` is called through the output.
     """
     check_dtype(inp)
+    check_inplace_leaf("dt_l1_", inp)
     return _DtL1_.apply(inp, voxel_spacing)
 
 
