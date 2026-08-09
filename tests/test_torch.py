@@ -1000,7 +1000,7 @@ def test_field_relax_solves_system():
 
 def test_field_matvec_rls_unit_weight_matches_field_matvec():
     # An all-ones weight map degenerates the weighted operator to the plain
-    # one, for both the RLS (wc=1) and JRLS (wc=C) weight shapes.
+    # one, for both the JRLS (wc=1) and RLS (wc=C) weight shapes.
     H, W, C = 6, 7, 2
     x = torch.randn(H, W, C, dtype=torch.float64)
     kw = dict(absolute=[0.3, 0.4], membrane=[1.0, 0.7], ndim=2)
