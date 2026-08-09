@@ -791,8 +791,8 @@ def field_matvec_rls(
     """RLS/JRLS-weighted variant of :func:`field_matvec`.
 
     ``wgt`` has shape ``(*batch, *spatial, 1)`` for a single weight shared
-    across all channels (RLS), or ``(*batch, *spatial, C)`` for a genuine
-    per-channel weight (JRLS, ``C`` matching ``inp``'s channel count) --
+    across all channels (JRLS), or ``(*batch, *spatial, C)`` for a genuine
+    per-channel weight (RLS, ``C`` matching ``inp``'s channel count) --
     the trailing dimension of ``wgt`` selects which mode is used.
     Differentiable wrt ``inp`` (``wgt`` is treated as fixed).
     """
@@ -825,10 +825,10 @@ def field_diag_rls(
 ) -> Tensor:
     """Diagonal (preconditioner) of :func:`field_matvec_rls`.
 
-    ``wgt`` selects RLS (trailing dim 1) vs JRLS (trailing dim ``C``), same
+    ``wgt`` selects JRLS (trailing dim 1) vs RLS (trailing dim ``C``), same
     as :func:`field_matvec_rls`. The output channel count ``C`` is taken
     from ``channels`` if given, else from ``wgt``'s trailing dimension when
-    it is not 1 (JRLS), else inferred from the per-channel penalty lengths
+    it is not 1 (RLS), else inferred from the per-channel penalty lengths
     (default 1), exactly as :func:`field_kernel` does. Not differentiable.
     """
     if channels is None:
