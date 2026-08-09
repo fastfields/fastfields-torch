@@ -22,12 +22,16 @@ form is differentiable follows the per-op rule in ``API_CONTRACT.md``
   side): the backward of :func:`sym_solve` never reads the pre-mutation
   right-hand side, only the saved ``mat``/``weight``, so overwriting it in
   place destroys no information backward needs.
-* :func:`sym_invert_` is **not** differentiable, for two independent
-  reasons: the inverse is nonlinear in ``mat`` (a correct backward would
-  need the pre-inversion matrix -- gone once mutated in place) *and* no
-  gradient is implemented for :func:`sym_invert` (its out-of-place form) on
-  this backend at all, mirroring ``jitfields``. Calling ``.backward()``
-  through either form's output raises ``RuntimeError``.
+* :func:`sym_invert_` is **not** differentiable -- for the same reason as
+  :func:`sym_invert`: no gradient is implemented for the packed inverse on
+  this backend at all, mirroring ``jitfields`` (which rejects a
+  grad-requiring ``mat`` outright). This is an *implementation gap*, not a
+  mathematical obstruction: the matrix inverse is perfectly differentiable
+  (``dL/dA = -B (dL/dB) B`` for ``B = A^-1``, symmetric), and note that
+  formula needs only the **inverse** -- i.e. the value this op leaves
+  behind -- so even the in-place form could support a gradient if one were
+  implemented. Calling ``.backward()`` through either form's output raises
+  ``RuntimeError``.
 """
 
 from __future__ import annotations
@@ -40,7 +44,12 @@ import fastfields.dlpack as _fb
 import torch
 from torch import Tensor
 
-from ._util import check_dtype, raise_not_differentiable, stream_ptr
+from ._util import (
+    check_dtype,
+    check_inplace_leaf,
+    raise_not_differentiable,
+    stream_ptr,
+)
 
 __all__ = [
     "sym_matvec",
@@ -217,6 +226,7 @@ def sym_solve_(
         If ``mat`` requires grad, or channel counts disagree.
     """
     check_dtype(mat, inp_out)
+    check_inplace_leaf("sym_solve_", inp_out)
     if weight is not None:
         check_dtype(weight)
     c = _check_sym(mat, inp_out)
@@ -263,11 +273,14 @@ def sym_invert_(mat: Tensor) -> Tensor:
     """In-place invert a compact-symmetric matrix (``mat <- inv(mat)``).
 
     Not differentiable -- calling ``.backward()`` through this raises
-    ``RuntimeError`` (mirrors :func:`sym_invert`; the inverse is nonlinear
-    in ``mat``, so a correct backward would additionally need the
-    pre-inversion matrix, which an in-place write has already destroyed). As
-    with any in-place op, a leaf tensor with ``requires_grad=True`` cannot
-    be mutated (torch's ordinary leaf rule).
+    ``RuntimeError`` (mirrors :func:`sym_invert`: no gradient is implemented
+    for the packed inverse on this backend). That is an implementation gap
+    rather than a mathematical one -- the inverse is differentiable, and its
+    backward ``-B (dL/dB) B`` needs only ``B``, the value this op leaves
+    behind. As with any in-place op, a leaf tensor with
+    ``requires_grad=True`` cannot be mutated (torch's ordinary leaf rule);
+    that is checked before ``mat`` is touched, so the call raises without
+    corrupting it.
 
     Parameters
     ----------
@@ -285,6 +298,7 @@ def sym_invert_(mat: Tensor) -> Tensor:
         If ``.backward()`` is called through the output.
     """
     check_dtype(mat)
+    check_inplace_leaf("sym_invert_", mat)
     return _InvertInPlace.apply(mat)
 
 
@@ -413,9 +427,9 @@ class _Invert(torch.autograd.Function):
     def backward(ctx, grad):
         raise_not_differentiable(
             "sym_invert",
-            "the packed-matrix inverse has no gradient implemented on this "
-            "backend (mirrors jitfields); it is also nonlinear in `mat`, so "
-            "a correct backward would need the pre-inversion matrix.",
+            "no gradient is implemented for the packed-matrix inverse on "
+            "this backend (mirrors jitfields). This is an implementation "
+            "gap, not a mathematical one.",
         )
 
 
@@ -432,9 +446,7 @@ class _InvertInPlace(torch.autograd.Function):
     def backward(ctx, grad):
         raise_not_differentiable(
             "sym_invert_",
-            "the packed-matrix inverse is nonlinear in `mat`, so a correct "
-            "backward would need the pre-inversion matrix -- already "
-            "overwritten by this in-place op -- and no gradient is "
-            "implemented for sym_invert on this backend anyway (mirrors "
-            "jitfields).",
+            "no gradient is implemented for the packed-matrix inverse on "
+            "this backend (mirrors jitfields). This is an implementation "
+            "gap, not a mathematical one.",
         )

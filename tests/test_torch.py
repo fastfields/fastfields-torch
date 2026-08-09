@@ -1253,3 +1253,113 @@ def test_inplace_and_out_of_place_agree():
     fft.field_addmatvec_(a, field, **_ACC_KW_FIELD)
     b = fft.field_addmatvec(base, field, **_ACC_KW_FIELD)
     assert torch.equal(a, b)
+
+
+# --------------------------------------------------------------------------- #
+# Regressions found by adversarial autograd review of fastfields-torch#28
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "name,call,proto",
+    [
+        ("dt_euclidean_", lambda x: fft.dt_euclidean_(x), (3,)),
+        ("dt_l1_", lambda x: fft.dt_l1_(x), (3,)),
+        ("sym_invert_", lambda x: fft.sym_invert_(x), (3,)),
+        ("spline_coeff_", lambda x: fft.spline_coeff_(x, 3, "dct2"), (2, 7)),
+    ],
+)
+def test_inplace_on_grad_leaf_raises_without_clobbering(name, call, proto):
+    """The leaf check must fire *before* the buffer is written.
+
+    ``torch.autograd.Function`` only checks the leaf rule when it wraps the
+    outputs -- after ``forward`` has run -- so without an up-front guard the
+    caller's tensor was overwritten and *then* the RuntimeError was raised,
+    leaving silently corrupted data behind a cleanly-failed call. Native
+    torch in-place ops never touch the data in this situation.
+    """
+    x = torch.randn(*proto, dtype=torch.float64).abs() + 1.0
+    x.requires_grad_(True)
+    before = x.detach().clone()
+    with pytest.raises(RuntimeError, match="leaf Variable"):
+        call(x)
+    assert torch.equal(before, x.detach()), (
+        f"{name} corrupted a leaf tensor before raising"
+    )
+
+
+def test_sym_solve_inplace_on_grad_leaf_raises_without_clobbering():
+    mat = random_spd((2,), 2, dtype=torch.float64)
+    x = torch.randn(2, 2, dtype=torch.float64, requires_grad=True)
+    before = x.detach().clone()
+    with pytest.raises(RuntimeError, match="leaf Variable"):
+        fft.sym_solve_(x, mat)
+    assert torch.equal(before, x.detach())
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda x: fft.dt_euclidean_(x),
+        lambda x: fft.dt_l1_(x),
+        lambda x: fft.sym_invert_(x),
+        lambda x: fft.spline_coeff_(x, 3, "dct2"),
+    ],
+)
+def test_inplace_on_grad_leaf_still_allowed_under_no_grad(call):
+    """The usual optimizer pattern must keep working."""
+    x = torch.randn(2, 3, dtype=torch.float64).abs() + 1.0
+    x = x.flatten()[:3].clone().requires_grad_(True)
+    with torch.no_grad():
+        call(x)  # must not raise
+
+
+@pytest.mark.parametrize("order", [2, 3, 5])
+@pytest.mark.parametrize("bound", ["dct1", "dct2", "dft", "replicate"])
+def test_gradcheck_spline_coeff_all_supported_bounds(order, bound):
+    """``dct1``'s operator is NOT symmetric -- backward must transpose it.
+
+    Re-applying the plain prefilter (what the code used to do) returns a
+    silently wrong gradient for ``dct1``; the error is O(1) and does not
+    shrink with the axis length.
+    """
+    x = torch.randn(2, 24, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(
+        lambda t: fft.spline_coeff(t, order, bound), (x,)
+    )
+    assert torch.autograd.gradcheck(
+        lambda t: fft.spline_coeff_(t.clone(), order, bound), (x,)
+    )
+
+
+@pytest.mark.parametrize("order", [2, 3, 5, 7])
+def test_spline_coeff_dct1_adjoint_identity(order):
+    """<M a, b> == <a, M^T b>, with M^T supplied by backward."""
+    n = 24
+    a = torch.randn(n, dtype=torch.float64, requires_grad=True)
+    b = torch.randn(n, dtype=torch.float64)
+    fft.spline_coeff(a, order, "dct1").backward(b)
+    lhs = torch.dot(fft.spline_coeff(a.detach(), order, "dct1"), b)
+    rhs = torch.dot(a.detach(), a.grad)
+    assert torch.allclose(lhs, rhs, atol=1e-6, rtol=1e-5)
+
+
+@pytest.mark.parametrize("bound", ["zero", "dst1", "dst2", "nocheck"])
+def test_spline_coeff_rejects_unimplemented_bounds(bound):
+    """``zero`` is silently treated as ``dct1`` by the binding -- reject it.
+
+    Mirrors jitfields' ``splinc.checkbound``.
+    """
+    x = torch.randn(2, 8, dtype=torch.float64)
+    with pytest.raises(ValueError):
+        fft.spline_coeff(x, 3, bound)
+    with pytest.raises(ValueError):
+        fft.spline_coeff_(x.clone(), 3, bound)
+
+
+@pytest.mark.parametrize("bound", ["zero", "dst1"])
+def test_spline_coeff_bound_check_skipped_for_trivial_orders(bound):
+    """Orders 0/1 make the prefilter the identity, so the bound is moot."""
+    x = torch.randn(2, 8, dtype=torch.float64)
+    for order in (0, 1):
+        fft.spline_coeff(x, order, bound)

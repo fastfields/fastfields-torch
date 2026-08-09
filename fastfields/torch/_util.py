@@ -42,6 +42,41 @@ def check_dtype(*tensors: Tensor) -> None:
             )
 
 
+def check_inplace_leaf(name: str, t: Tensor) -> None:
+    """Reject an in-place write to a grad-requiring leaf *before* mutating it.
+
+    ``torch.autograd.Function`` performs this check only when it wraps the
+    outputs -- i.e. **after** ``forward`` has already run. Our ``forward``
+    bodies hand the caller's buffer straight to the native binding, so
+    without this up-front guard the tensor is overwritten and *then* the
+    ``RuntimeError`` is raised, leaving the caller with silently corrupted
+    data on what looks like a cleanly-failed call. Native torch in-place ops
+    (``Tensor.mul_`` & co.) raise without touching the data; this restores
+    that contract.
+
+    Mirrors autograd's own rule, including the ``no_grad`` escape hatch that
+    makes the usual optimizer pattern (``with torch.no_grad(): p.mul_(...)``)
+    keep working.
+
+    Parameters
+    ----------
+    name : str
+        Operation name, used in the error message.
+    t : torch.Tensor
+        The tensor the caller is asking to mutate in place.
+
+    Raises
+    ------
+    RuntimeError
+        If ``t`` is a grad-requiring leaf and grad mode is enabled.
+    """
+    if torch.is_grad_enabled() and t.requires_grad and t.is_leaf:
+        raise RuntimeError(
+            f"a leaf Variable that requires grad is being used in an "
+            f"in-place operation ({name})."
+        )
+
+
 def raise_not_differentiable(name: str, reason: str) -> None:
     """Raise the standard "no gradient through this op" ``RuntimeError``.
 
