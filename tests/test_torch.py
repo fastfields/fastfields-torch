@@ -386,8 +386,8 @@ def test_dt_mesh_backward_raises_clear_runtimeerror(monkeypatch):
     monkeypatch.setattr(dtmod._fb, "dt_mesh", spy)
 
     loc = torch.zeros(1, 3, dtype=torch.float32, requires_grad=True)
-    verts = torch.zeros(1, 3, 3, dtype=torch.float32)
-    faces = torch.tensor([[[0, 1, 2]]], dtype=torch.int64)
+    verts = torch.zeros(3, 3, dtype=torch.float32)
+    faces = torch.tensor([[0, 1, 2]], dtype=torch.int64)
 
     dist = fft.dt_mesh(loc, verts, faces)
     assert dist.requires_grad
@@ -546,11 +546,214 @@ def test_dt_mesh_normalizes_faces_to_int64(monkeypatch):
     monkeypatch.setattr(dtmod._fb, "dt_mesh", spy)
 
     loc = torch.zeros(1, 3, dtype=torch.float32)
-    verts = torch.zeros(1, 3, 3, dtype=torch.float32)
+    verts = torch.zeros(3, 3, dtype=torch.float32)
     for face_dtype in (torch.int32, torch.int16, torch.int64):
-        faces = torch.tensor([[[0, 1, 2]]], dtype=face_dtype)
+        faces = torch.tensor([[0, 1, 2]], dtype=face_dtype)
         fft.dt_mesh(loc, verts, faces, signed=False, naive=True)
         assert seen["faces_dtype"] == torch.int64
+
+
+# --------------------------------------------------------------------------- #
+# point-to-mesh distance (numerical, vs a brute-force reference)              #
+# --------------------------------------------------------------------------- #
+#
+# One tetrahedron, many query points -- the ordinary `dt_mesh` call shape.
+# `vertices`/`faces` describe a *single* mesh and are never batched (only
+# `loc` is); see fastfields#32. These run the real binding, unlike the
+# monkeypatched tests above.
+
+# Unit tetrahedron, faces oriented outwards (the signed variant takes its
+# sign from the pseudo-normals of the nearest entity).
+_TETRA_VERTS = torch.tensor(
+    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    dtype=torch.float64,
+)
+_TETRA_FACES = torch.tensor(
+    [[0, 2, 1], [0, 3, 2], [0, 1, 3], [1, 2, 3]], dtype=torch.int64
+)
+
+
+def _closest_point_on_triangle(p, a, b, c):
+    """Closest point to `p` on triangle `abc` (Ericson, RTCD 5.1.5)."""
+    ab, ac, ap = b - a, c - a, p - a
+    d1, d2 = ab.dot(ap), ac.dot(ap)
+    if d1 <= 0 and d2 <= 0:
+        return a
+    bp = p - b
+    d3, d4 = ab.dot(bp), ac.dot(bp)
+    if d3 >= 0 and d4 <= d3:
+        return b
+    vc = d1 * d4 - d3 * d2
+    if vc <= 0 and d1 >= 0 and d3 <= 0:
+        return a + (d1 / (d1 - d3)) * ab
+    cp = p - c
+    d5, d6 = ab.dot(cp), ac.dot(cp)
+    if d6 >= 0 and d5 <= d6:
+        return c
+    vb = d5 * d2 - d1 * d6
+    if vb <= 0 and d2 >= 0 and d6 <= 0:
+        return a + (d2 / (d2 - d6)) * ac
+    va = d3 * d6 - d5 * d4
+    if va <= 0 and (d4 - d3) >= 0 and (d5 - d6) >= 0:
+        return b + ((d4 - d3) / ((d4 - d3) + (d5 - d6))) * (c - b)
+    denom = 1.0 / (va + vb + vc)
+    return a + ab * (vb * denom) + ac * (vc * denom)
+
+
+def _mesh_dt_reference(loc, verts, faces):
+    """Brute force: per point, scan every triangle.
+
+    Returns ``(dist, nearest_vertex)`` with the *unsigned* distance and the
+    vertex of the closest triangle nearest to the projection -- the
+    convention implemented by the kernel's ``get_nearest_vertex``.
+    """
+    flat = loc.reshape(-1, loc.shape[-1])
+    dist = torch.empty(len(flat), dtype=torch.float64)
+    near = torch.empty(len(flat), dtype=torch.int64)
+    for i, p in enumerate(flat):
+        best_d, best_proj, best_face = float("inf"), None, None
+        for face in faces:
+            q = _closest_point_on_triangle(p, *[verts[j] for j in face])
+            d = (p - q).norm().item()
+            if d < best_d:
+                best_d, best_proj, best_face = d, q, face
+        dist[i] = best_d
+        vd = [(verts[j] - best_proj).norm() for j in best_face]
+        near[i] = best_face[int(torch.stack(vd).argmin())]
+    batch = loc.shape[:-1]
+    return dist.reshape(batch), near.reshape(batch)
+
+
+def _inside_convex(loc, verts, faces):
+    """Inside test for a *convex* mesh with outward-oriented faces."""
+    flat = loc.reshape(-1, loc.shape[-1])
+    inside = torch.ones(len(flat), dtype=torch.bool)
+    for face in faces:
+        a, b, c = (verts[j] for j in face)
+        n = torch.linalg.cross(b - a, c - a)
+        inside &= (flat - a) @ n <= 0
+    return inside.reshape(loc.shape[:-1])
+
+
+def _query_points(n, seed):
+    """Random points around *and inside* the tetrahedron.
+
+    The tetrahedron occupies a small fraction of its bounding box, so
+    uniform box sampling alone would essentially never land inside it and
+    the signed test would never see a negative distance. Barycentric
+    samples are mixed in to guarantee interior points. Points very close to
+    the surface are dropped (the sign, and the nearest face, are ambiguous
+    there).
+    """
+    g = torch.Generator().manual_seed(seed)
+    outer = torch.rand(3 * n, 3, dtype=torch.float64, generator=g)
+    outer = outer * 1.8 - 0.6
+    w = -torch.rand(n, 4, dtype=torch.float64, generator=g).log()
+    inner = (w / w.sum(-1, keepdim=True)) @ _TETRA_VERTS
+    pts = torch.cat([outer, inner])
+    d, _ = _mesh_dt_reference(pts, _TETRA_VERTS, _TETRA_FACES)
+    pts = pts[d > 1e-2]
+    return pts[torch.randperm(len(pts), generator=g)][:n]
+
+
+@pytest.mark.parametrize("naive", [False, True])
+def test_dt_mesh_unsigned_matches_bruteforce(naive):
+    loc = _query_points(24, seed=0)
+    ref, _ = _mesh_dt_reference(loc, _TETRA_VERTS, _TETRA_FACES)
+
+    out = fft.dt_mesh(
+        loc, _TETRA_VERTS, _TETRA_FACES, signed=False, naive=naive
+    )
+
+    assert out.shape == loc.shape[:-1]
+    assert torch.allclose(out, ref, rtol=1e-10, atol=1e-10)
+
+
+@pytest.mark.parametrize("naive", [False, True])
+def test_dt_mesh_signed_matches_bruteforce(naive):
+    loc = _query_points(24, seed=1)
+    ref, _ = _mesh_dt_reference(loc, _TETRA_VERTS, _TETRA_FACES)
+    inside = _inside_convex(loc, _TETRA_VERTS, _TETRA_FACES)
+    sign = torch.where(inside, -1.0, 1.0).to(torch.float64)
+
+    out = fft.dt_mesh(
+        loc, _TETRA_VERTS, _TETRA_FACES, signed=True, naive=naive
+    )
+
+    assert torch.allclose(out, sign * ref, rtol=1e-10, atol=1e-10)
+    assert inside.any()  # the tetrahedron is closed: some points are inside
+
+
+@pytest.mark.parametrize("signed", [False, True])
+def test_dt_mesh_return_nearest_matches_bruteforce(signed):
+    loc = _query_points(24, seed=2)
+    ref, ref_near = _mesh_dt_reference(loc, _TETRA_VERTS, _TETRA_FACES)
+    if signed:
+        inside = _inside_convex(loc, _TETRA_VERTS, _TETRA_FACES)
+        ref = ref * torch.where(inside, -1.0, 1.0).to(torch.float64)
+
+    dist, near = fft.dt_mesh(
+        loc, _TETRA_VERTS, _TETRA_FACES, signed=signed, return_nearest=True
+    )
+
+    assert near.dtype == torch.int64
+    assert near.shape == loc.shape[:-1]
+    assert torch.allclose(dist, ref, rtol=1e-10, atol=1e-10)
+    assert torch.equal(near, ref_near)
+
+
+def test_dt_mesh_default_return_nearest_false_runs():
+    # `return_nearest=False` is the default and passes `nearest=None` down to
+    # the binding; that null used to be caught by the hub's same-device check
+    # and reported as a (bogus) device mismatch -- fastfields#32.
+    loc = _query_points(8, seed=3)
+    out = fft.dt_mesh(loc, _TETRA_VERTS, _TETRA_FACES)
+    assert isinstance(out, torch.Tensor)
+    assert out.shape == loc.shape[:-1]
+
+
+def test_dt_mesh_batched_query_points():
+    # only `loc` carries batch dims; the outputs take loc.shape[:-1]
+    loc = _query_points(12, seed=4).reshape(3, 4, 3)
+    ref, ref_near = _mesh_dt_reference(loc, _TETRA_VERTS, _TETRA_FACES)
+
+    dist, near = fft.dt_mesh(
+        loc, _TETRA_VERTS, _TETRA_FACES, signed=False, return_nearest=True
+    )
+
+    assert dist.shape == (3, 4)
+    assert torch.allclose(dist, ref, rtol=1e-10, atol=1e-10)
+    assert torch.equal(near, ref_near)
+
+
+def test_dt_mesh_float32():
+    loc = _query_points(12, seed=5)
+    ref, _ = _mesh_dt_reference(loc, _TETRA_VERTS, _TETRA_FACES)
+    out = fft.dt_mesh(
+        loc.float(), _TETRA_VERTS.float(), _TETRA_FACES, signed=False
+    )
+    assert out.dtype == torch.float32
+    assert torch.allclose(out.double(), ref, rtol=1e-5, atol=1e-5)
+
+
+def test_dt_mesh_rejects_batched_mesh():
+    # A batched mesh is not a supported shape (jitfields has no such mode
+    # either); it must be rejected with a clear message rather than deep
+    # inside the native shape checks.
+    loc = _query_points(5, seed=6)
+    with pytest.raises(ValueError, match="vertices must be a 2D"):
+        fft.dt_mesh(loc, _TETRA_VERTS.expand(5, 4, 3), _TETRA_FACES)
+    with pytest.raises(ValueError, match="faces must be a 2D"):
+        fft.dt_mesh(loc, _TETRA_VERTS, _TETRA_FACES.expand(5, 4, 3))
+
+
+def test_dt_mesh_real_binding_backward_still_raises():
+    # The autograd wiring must keep working on the real (non-stubbed) path.
+    loc = _query_points(6, seed=7).requires_grad_(True)
+    dist = fft.dt_mesh(loc, _TETRA_VERTS, _TETRA_FACES)
+    assert dist.requires_grad
+    with pytest.raises(RuntimeError, match="dt_mesh"):
+        dist.sum().backward()
 
 
 # --------------------------------------------------------------------------- #
