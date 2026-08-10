@@ -52,6 +52,9 @@ __all__ = [
     "flow_subdiag_",
     "flow_kernel",
     "flow_relax",
+    "flow_matvec_rls",
+    "flow_diag_rls",
+    "flow_relax_rls",
     "flow_precond",
     "flow_forward",
 ]
@@ -238,6 +241,81 @@ class _FieldMatvecRLS(torch.autograd.Function):
                 stream=stream_ptr(ginp),
             )
         return ginp, None, None, None, None, None, None, None
+
+
+class _FlowMatvecRLS(torch.autograd.Function):
+    """JRLS-weighted variant of ``_FlowMatvec``.
+
+    Differentiable wrt ``inp`` only -- ``wgt`` is treated as a fixed
+    coefficient field, exactly as in ``_FieldMatvecRLS``. For a *fixed*
+    weight map ``L(w)`` is still self-adjoint, so the backward pass is the
+    same weighted matvec applied to ``grad_out``.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        inp,
+        wgt,
+        voxel_size,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        bound,
+        ndim,
+    ):
+        out = inp.new_zeros(inp.shape)
+        _fb.flow_matvec_rls(
+            out,
+            inp,
+            wgt,
+            voxel_size=voxel_size,
+            absolute=absolute,
+            membrane=membrane,
+            bending=bending,
+            shears=shears,
+            div=div,
+            bound=bound,
+            ndim=ndim,
+            stream=stream_ptr(out),
+        )
+        ctx.save_for_backward(wgt)
+        ctx.args = (
+            voxel_size,
+            absolute,
+            membrane,
+            bending,
+            shears,
+            div,
+            bound,
+            ndim,
+        )
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        ginp = None
+        if ctx.needs_input_grad[0]:
+            (wgt,) = ctx.saved_tensors
+            vs, ab, mem, ben, sh, dv, bnd, ndim = ctx.args
+            ginp = grad_out.new_zeros(grad_out.shape)
+            _fb.flow_matvec_rls(
+                ginp,
+                grad_out.contiguous(),
+                wgt,
+                voxel_size=vs,
+                absolute=ab,
+                membrane=mem,
+                bending=ben,
+                shears=sh,
+                div=dv,
+                bound=bnd,
+                ndim=ndim,
+                stream=stream_ptr(ginp),
+            )
+        return ginp, None, None, None, None, None, None, None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -1002,6 +1080,130 @@ def flow_relax(
         flow,
         hes.contiguous(),
         grd.contiguous(),
+        voxel_size=_voxel(voxel_size, ndim),
+        absolute=float(absolute),
+        membrane=float(membrane),
+        bending=float(bending),
+        shears=float(shears),
+        div=float(div),
+        bound=as_bound(bound),
+        ndim=ndim,
+        nb_iter=int(nb_iter),
+        stream=stream_ptr(flow),
+    )
+    return flow
+
+
+def flow_matvec_rls(
+    inp: Tensor,
+    wgt: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """RLS/JRLS-weighted variant of :func:`flow_matvec`.
+
+    ``wgt`` has shape ``(*batch, *spatial, 1)``: unlike the field family, the
+    flow weighting is always *joint* -- the trailing axis of a flow field
+    holds the components of one displacement vector, so a single weight is
+    shared across them. Differentiable wrt ``inp`` (``wgt`` is treated as
+    fixed).
+
+    ``bending`` is **not supported** with weighting (no weighted bending
+    kernel exists, as in ``jitfields``); a non-zero value raises.
+    """
+    check_dtype(inp)
+    return _FlowMatvecRLS.apply(
+        inp,
+        wgt,
+        _voxel(voxel_size, ndim),
+        float(absolute),
+        float(membrane),
+        float(bending),
+        float(shears),
+        float(div),
+        as_bound(bound),
+        ndim,
+    )
+
+
+def flow_diag_rls(
+    wgt: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+    dtype: torch.dtype = torch.float64,
+    device=None,
+) -> Tensor:
+    """Diagonal (preconditioner) of :func:`flow_matvec_rls`.
+
+    Unlike plain :func:`flow_diag`, which builds from a *shape*, this one is
+    driven by the weight map: the output is ``wgt.shape[:-1] + (ndim,)``,
+    since a flow field's channel count is ``ndim``. Same ``wgt`` conventions
+    as :func:`flow_matvec_rls`. Not differentiable.
+    """
+    out = torch.zeros(
+        tuple(wgt.shape[:-1]) + (int(ndim),),
+        dtype=dtype,
+        device=device if device is not None else wgt.device,
+    )
+    _fb.flow_diag_rls(
+        out,
+        wgt,
+        voxel_size=_voxel(voxel_size, ndim),
+        absolute=float(absolute),
+        membrane=float(membrane),
+        bending=float(bending),
+        shears=float(shears),
+        div=float(div),
+        bound=as_bound(bound),
+        ndim=ndim,
+        stream=stream_ptr(out),
+    )
+    return out
+
+
+def flow_relax_rls(
+    flow: Tensor,
+    hes: Tensor,
+    grd: Tensor,
+    wgt: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+    nb_iter: int = 1,
+) -> Tensor:
+    """RLS/JRLS-weighted variant of :func:`flow_relax`.
+
+    Refines ``flow`` in place with ``nb_iter`` relaxation sweeps of
+    ``(H + L(w)) x = g``, same ``wgt`` conventions as
+    :func:`flow_matvec_rls`. Not differentiable (an in-place iterative
+    solver); ``flow`` is the warm start, mutated and returned.
+    """
+    check_dtype(flow)
+    _fb.flow_relax_rls(
+        flow,
+        hes.contiguous(),
+        grd.contiguous(),
+        wgt.contiguous(),
         voxel_size=_voxel(voxel_size, ndim),
         absolute=float(absolute),
         membrane=float(membrane),
