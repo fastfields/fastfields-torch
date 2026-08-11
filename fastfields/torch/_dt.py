@@ -245,14 +245,11 @@ class _DtMesh(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, loc, vertices, faces, signed, naive, return_nearest):
-        # 0-stride broadcast views (zero-copy); the stride-aware binding
-        # reads them directly. Outputs are contiguous real buffers.
-        batch = torch.broadcast_shapes(
-            loc.shape[:-1], vertices.shape[:-2], faces.shape[:-2]
-        )
-        loc_b = loc.broadcast_to((*batch, loc.shape[-1]))
-        vert_b = vertices.broadcast_to((*batch, *vertices.shape[-2:]))
-        faces_b = faces.broadcast_to((*batch, *faces.shape[-2:]))
+        # A single mesh is queried by an arbitrarily batched point set: only
+        # `loc` carries batch dims, and `vertices`/`faces` stay unbatched
+        # (the binding requires exactly (N, D) / (M, D)). Outputs are
+        # contiguous real buffers shaped like loc.shape[:-1].
+        batch = loc.shape[:-1]
         dist = loc.new_empty(batch)
         nearest = None
         if return_nearest:
@@ -260,9 +257,9 @@ class _DtMesh(torch.autograd.Function):
         _fb.dt_mesh(
             dist,
             nearest,
-            loc_b,
-            vert_b,
-            faces_b,
+            loc,
+            vertices,
+            faces,
             signed,
             naive,
             stream=stream_ptr(dist),
@@ -297,9 +294,9 @@ def dt_mesh(
     loc : torch.Tensor
         Query points, shape ``(*B, D)``.
     vertices : torch.Tensor
-        Mesh vertices, shape ``(*B, V, D)`` (same float dtype as ``loc``).
+        Mesh vertices, shape ``(V, D)`` (same float dtype as ``loc``).
     faces : torch.Tensor
-        Triangle vertex indices, shape ``(*B, F, D)`` (integer tensor; cast
+        Triangle vertex indices, shape ``(F, D)`` (integer tensor; cast
         to int64 before the binding).
     signed : bool, default=True
         Return signed distances.
@@ -320,15 +317,20 @@ def dt_mesh(
     ------
     TypeError
         If ``loc``/``vertices`` are not float32/float64.
+    ValueError
+        If ``vertices`` or ``faces`` is not 2D.
     RuntimeError
         If ``.backward()`` is called through ``dist``.
 
     Notes
     -----
-    The batch (leading) dims of ``loc`` (core ``(D,)``), ``vertices`` (core
-    ``(V, D)``) and ``faces`` (core ``(F, D)``) are broadcast together via
-    ``Tensor.broadcast_to`` (0-stride views, no copy); ``dist`` (and
-    ``nearest_vertex``) are allocated with the broadcast batch shape.
+    A **single** mesh is queried by an arbitrarily batched point set: only
+    ``loc`` carries batch dims, and ``dist`` (and ``nearest_vertex``) are
+    allocated with ``loc.shape[:-1]``. The mesh operands are *not* broadcast
+    against that batch -- ``vertices`` and ``faces`` must be exactly
+    ``(V, D)`` / ``(F, D)``, matching jitfields' ``mesh_distance`` and the
+    ``ff::dt_mesh`` contract. (An earlier revision broadcast them to
+    ``(*B, V, D)``, which the binding rejects outright; see fastfields#32.)
     """
     check_dtype(loc, vertices)
     # faces holds integer vertex indices: the binding reads them at int64
@@ -336,4 +338,14 @@ def dt_mesh(
     # int64 before the binding (mirrors the numpy wrapper).
     if faces.dtype != torch.int64:
         faces = faces.to(torch.int64)
+    if vertices.ndim != 2:
+        raise ValueError(
+            "dt_mesh: vertices must be a 2D (V, D) tensor describing a "
+            f"single mesh, got shape {tuple(vertices.shape)}"
+        )
+    if faces.ndim != 2:
+        raise ValueError(
+            "dt_mesh: faces must be a 2D (F, D) tensor describing a single "
+            f"mesh, got shape {tuple(faces.shape)}"
+        )
     return _DtMesh.apply(loc, vertices, faces, signed, naive, return_nearest)
