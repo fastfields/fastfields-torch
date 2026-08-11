@@ -257,8 +257,8 @@ def spline_coeff(
     Returns a new tensor (does not modify ``inp``), so it is safe for autograd.
     Differentiable with respect to ``inp``. Only the boundary conditions the
     prefilter implements are accepted (``dct1``/``dct2``/``dft``/
-    ``replicate``); anything else -- in particular ``zero``, which the
-    binding silently treats as ``dct1`` -- raises ``ValueError``.
+    ``replicate``); anything else -- in particular ``zero`` -- raises
+    ``ValueError``.
 
     Parameters
     ----------
@@ -299,8 +299,7 @@ def spline_coeff_(
 
     Only the boundary conditions the prefilter actually implements are
     accepted (``dct1``/``dct2``/``dft``/``replicate``); anything else -- in
-    particular ``zero``, which the binding silently treats as ``dct1`` --
-    raises ``ValueError``.
+    particular ``zero`` -- raises ``ValueError``.
 
     Raises
     ------
@@ -356,10 +355,13 @@ def spline_coeff_(
 _BOUND_DCT1 = int(Bound.DCT1)
 
 # Bounds the prefilter is actually implemented for (mirrors jitfields'
-# ``splinc.checkbound``). Everything else either raises inside the binding
-# (dst1/dst2/nocheck) or -- for ``zero`` -- is silently treated as ``dct1``,
-# which would hand back results for a boundary condition the caller did not
-# ask for. Reject those up front instead.
+# ``splinc.checkbound``). Everything else raises inside the binding itself
+# now (fastfields-lib#70 -- previously ``zero`` was silently aliased to
+# ``dct1``, handing back results for a boundary condition the caller did
+# not ask for). This check is kept as defense-in-depth: it still applies
+# to the built-in ``dst1``/``dst2``/``nocheck`` bounds, and it gives a
+# clear error to callers on older published wheels that predate #70,
+# where the binding still aliases ``zero`` silently instead of raising.
 _SPLINC_BOUNDS_OK = (
     int(Bound.DCT1),
     int(Bound.DCT2),
