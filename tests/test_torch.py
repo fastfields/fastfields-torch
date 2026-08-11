@@ -1259,6 +1259,86 @@ def test_field_relax_rls_solves_system():
     assert rel < 3e-3
 
 
+# --------------------------------------------------------------------------- #
+# Flow RLS/JRLS                                                               #
+#                                                                             #
+# The flow weighting is always *joint* (`wgt` has a trailing size-1 axis):    #
+# the trailing axis of a flow field holds the components of one displacement  #
+# vector. `bending` has no weighted kernel and is rejected.                   #
+# --------------------------------------------------------------------------- #
+
+_FLOW_RLS_KW = [
+    dict(absolute=1.75, ndim=2),
+    dict(absolute=0.3, membrane=1.0, ndim=2),
+    dict(shears=1.3, div=0.7, ndim=2),
+    dict(absolute=0.5, membrane=0.9, shears=1.3, div=0.7, ndim=2),
+]
+
+
+@pytest.mark.parametrize("kw", _FLOW_RLS_KW)
+def test_flow_matvec_rls_unit_weight_matches_flow_matvec(kw):
+    H, W, D = 6, 7, 2
+    x = torch.randn(H, W, D, dtype=torch.float64)
+    expect = fft.flow_matvec(x, **kw)
+    w = torch.ones(H, W, 1, dtype=torch.float64)
+    got = fft.flow_matvec_rls(x, w, **kw)
+    assert torch.allclose(got, expect, atol=1e-10)
+
+
+@pytest.mark.parametrize("kw", _FLOW_RLS_KW)
+def test_flow_matvec_rls_gradcheck(kw):
+    # Backward = the same weighted matvec on grad_out, which is only correct
+    # because L(w) is self-adjoint for a fixed w. gradcheck proves it.
+    H, W, D = 5, 6, 2
+    x = torch.randn(H, W, D, dtype=torch.float64, requires_grad=True)
+    wgt = 0.5 + torch.rand(H, W, 1, dtype=torch.float64)
+    assert torch.autograd.gradcheck(
+        lambda z: fft.flow_matvec_rls(z, wgt, **kw),
+        (x,),
+        eps=1e-6,
+        atol=1e-4,
+    )
+
+
+def test_flow_diag_rls_matches_matvec_rls_on_impulse():
+    H, W, D = 6, 7, 2
+    kw = dict(absolute=0.3, membrane=1.0, shears=0.5, div=0.4, ndim=2)
+    wgt = 0.5 + torch.rand(H, W, 1, dtype=torch.float64)
+    d = fft.flow_diag_rls(wgt, **kw)
+    assert tuple(d.shape) == (H, W, D)
+    i, j, c = 3, 3, 1
+    e = torch.zeros(H, W, D, dtype=torch.float64)
+    e[i, j, c] = 1.0
+    o = fft.flow_matvec_rls(e, wgt, **kw)
+    assert torch.allclose(d[i, j, c], o[i, j, c], atol=1e-8)
+
+
+def test_flow_relax_rls_solves_system():
+    H, W, D, hdiag = 6, 7, 2, 8.0
+    hes = torch.zeros(H, W, D * (D + 1) // 2, dtype=torch.float64)
+    hes[..., 0] = hdiag
+    hes[..., 1] = hdiag
+    grd = torch.randn(H, W, D, dtype=torch.float64)
+    kw = dict(absolute=0.3, membrane=0.7, shears=1.0, div=0.5, ndim=2)
+    wgt = 0.5 + torch.rand(H, W, 1, dtype=torch.float64)
+    sol = torch.zeros(H, W, D, dtype=torch.float64)
+    out = fft.flow_relax_rls(sol, hes, grd, wgt, nb_iter=250, **kw)
+    assert out is sol  # in-place, warm-started
+    lx = fft.flow_matvec_rls(sol, wgt, **kw)
+    rel = (hdiag * sol + lx - grd).norm() / grd.norm()
+    assert rel < 3e-3
+
+
+def test_flow_rls_rejects_bending():
+    H, W, D = 6, 6, 2
+    x = torch.randn(H, W, D, dtype=torch.float64)
+    wgt = torch.ones(H, W, 1, dtype=torch.float64)
+    with pytest.raises((ValueError, RuntimeError)):
+        fft.flow_matvec_rls(x, wgt, bending=1.0, ndim=2)
+    with pytest.raises((ValueError, RuntimeError)):
+        fft.flow_diag_rls(wgt, bending=1.0, ndim=2)
+
+
 def test_field_accumulate_variants():
     H, W, C = 5, 6, 2
     field = torch.randn(H, W, C, dtype=torch.float64)
