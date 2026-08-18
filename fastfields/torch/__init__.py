@@ -40,7 +40,7 @@ and resampling/restriction).
 
 from __future__ import annotations
 
-from fastfields.dlpack import Bound, Spline
+from fastfields.helpers import Bound, Spline
 
 from ._dt import dt_euclidean, dt_euclidean_, dt_l1, dt_l1_, dt_mesh
 from ._pushpull import count, grad, pull, push

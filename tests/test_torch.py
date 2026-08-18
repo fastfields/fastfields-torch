@@ -136,8 +136,8 @@ def test_resample_restriction_adjoint_by_anchor():
 
 
 def test_anchor_scale_shift_mapping():
-    # the anchor->(scale, shift) map is shared via fastfields.dlpack
-    from fastfields.dlpack import anchor_scale_shift
+    # the anchor->(scale, shift) map is shared via fastfields.helpers
+    from fastfields.helpers import anchor_scale_shift
 
     for name, abbr, exp_scale, exp_shift in [
         ("centers", "c", 7 / 3, 0.0),

@@ -40,8 +40,13 @@ requires-python = ">=3.9"
 # (fires when `git describe` can't find a tag, e.g. a shallow-clone CI
 # misconfiguration) would also satisfy `==0.*` if it were ever accidentally
 # published. That's an accepted risk, not something this pin tries to solve.
+# fastfields-helpers is the pure-Python enums/normalisation package this
+# wrapper's argument handling is built on -- same bare-wildcard convention
+# as fastfields-dlpack above, for the same reason: it moves on the same 0.x
+# line.
 dependencies = [
     "fastfields-dlpack==0.*",
+    "fastfields-helpers==0.*",
     "torch",
     "numpy",
 ]
