@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Optional, Sequence
 
 import fastfields.dlpack as _fb
-from fastfields.dlpack import as_bound
+from fastfields.helpers import as_bound
 
 import torch
 from torch import Tensor

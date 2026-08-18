@@ -35,7 +35,7 @@ from __future__ import annotations
 from typing import Optional, Sequence
 
 import fastfields.dlpack as _fb
-from fastfields.dlpack import (
+from fastfields.helpers import (
     Bound,
     anchor_scale_shift,
     as_bound,
@@ -128,7 +128,7 @@ def resample(
     anchor : {"centers", "edges", "first", "last"}, default="centers"
         Sampling-grid convention, matching ``interpol.resize``. Sets the
         default per-dim ``scale`` and ``shift`` (see
-        :func:`fastfields.dlpack.anchor_scale_shift`). Abbreviations
+        :func:`fastfields.helpers.anchor_scale_shift`). Abbreviations
         (``"c"``/``"e"``/``"f"``/
         ``"l"``) are accepted.
     shift : float, optional

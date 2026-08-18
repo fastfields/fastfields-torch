@@ -20,7 +20,7 @@ work for CUDA tensors once a GPU build is available.
 | `dt_euclidean`, `dt_l1`, `dt_mesh` | no (raise if grad) | — |
 
 Matrices use the compact-symmetric packing (diagonal first, then the rows of the
-upper triangle). Enums `Spline` and `Bound` are re-exported from `fastfields.dlpack`.
+upper triangle). Enums `Spline` and `Bound` are re-exported from `fastfields.helpers`.
 
 The autograd structure mirrors `jitfields` (`sym.py`, `resize.py`, `splinc.py`).
 

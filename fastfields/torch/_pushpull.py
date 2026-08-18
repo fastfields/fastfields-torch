@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Sequence
 
 import fastfields.dlpack as _fb
-from fastfields.dlpack import as_bound, as_spline
+from fastfields.helpers import as_bound, as_spline
 
 import torch
 from torch import Tensor

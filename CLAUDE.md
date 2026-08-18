@@ -33,7 +33,7 @@ mirrors `jitfields` (`sym.py`, `resize.py`, `splinc.py`).
   or omitting the op). See `API_CONTRACT.md` ("In-place policy") and
   fastfields#4.
 - Posdef matrices use the compact-symmetric packing (diagonal first, then upper
-  triangle). `Spline`/`Bound` enums re-exported from `fastfields.dlpack`.
+  triangle). `Spline`/`Bound` enums re-exported from `fastfields.helpers`.
 
 ## Layout
 `fastfields/torch/`: `__init__.py`, `_dt.py`, `_sym.py`, `_resample.py`,
@@ -41,7 +41,7 @@ mirrors `jitfields` (`sym.py`, `resize.py`, `splinc.py`).
 
 ## Build & test
 ```
-pip install .                    # depends on fastfields-dlpack, torch, numpy
+pip install .                    # depends on fastfields-dlpack, fastfields-helpers, torch, numpy
 python -m pytest tests/ -q       # import from a neutral cwd
 ```
 Prefer a regular install over editable (native-namespace merge).
