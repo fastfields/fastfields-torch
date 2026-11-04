@@ -22,7 +22,20 @@ mirrors `jitfields` (`sym.py`, `resize.py`, `splinc.py`).
   `sym_solve_` (in-place, same gradient as `sym_solve` — backward never reads
   the pre-mutation value), `resample` / `restriction` (each other's adjoint at
   reciprocal scale), `spline_coeff` / `spline_coeff_` (backward applies the prefilter
-  transpose; only bounds dct1/dct2/dft/replicate are accepted).
+  transpose; only bounds dct1/dct2/dft/replicate are accepted), all four
+  pushpull ops (`pull`/`push` w.r.t. field + `grid`; `count` w.r.t. `grid`;
+  `grad` w.r.t. field + `grid`, via `count_backward`/`grad_backward` — note
+  `grad(abs=True)`'s backward is the adjoint of the *majorised* operator, not
+  a Jacobian, so `gradcheck` does not pass there and must not be expected to),
+  and the regulariser operators.
+- **`*_forward` / `*_precond` stay Python compositions here on purpose.** The
+  hub has fused kernels for both, bound as
+  `fastfields.dlpack.{field,flow}_{forward,precond}`, and numpy/cupy call them
+  directly. On torch the composition out of `sym_matvec`/`sym_solve` +
+  `*_matvec`/`*_diag` is what makes them differentiable; re-pointing at the raw
+  binding would be faster and would silently drop the gradient. A fused *and*
+  differentiable version (a `Function` calling `field_forward` in both
+  directions — it is self-adjoint) is the right follow-up.
 - **Not differentiable, but still exposed** (parity with `fastfields.numpy`/
   `fastfields.cupy`): `dt_euclidean` / `dt_euclidean_`, `dt_l1` / `dt_l1_`,
   `dt_mesh` (no in-place form), `sym_invert` / `sym_invert_`. Forward always
@@ -37,7 +50,18 @@ mirrors `jitfields` (`sym.py`, `resize.py`, `splinc.py`).
 
 ## Layout
 `fastfields/torch/`: `__init__.py`, `_dt.py`, `_sym.py`, `_resample.py`,
-`_util.py` (dtype/contiguity/autograd helpers). `tests/test_torch.py`.
+`_pushpull.py`, `_reg.py`, `_util.py` (dtype/contiguity/autograd helpers).
+`tests/test_torch.py`, `tests/test_new_surface.py`,
+`tests/test_reg_family_routing.py`, `tests/test_api_coverage.py`.
+
+**Coverage is enforced, not remembered.** `tests/test_api_coverage.py`
+compares this package's `__all__` against `fastfields.dlpack.__all__` and
+fails on any binding that is neither wrapped nor listed in its `DELIBERATE`
+dict with a reason. The nine deliberate omissions are the five `*_backward`
+adjoints (used inside the autograd Functions, reached via `.backward()`) and
+`field_precond_` / `flow_precond_` / `field_cg` (each needs an autograd
+decision first). Full hub->binding->wrapper matrix: `tools/api_inventory.py`
+in `fastfields-dlpack`.
 
 ## Build & test
 ```

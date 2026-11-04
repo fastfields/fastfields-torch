@@ -7,6 +7,29 @@
 The ``*_matvec`` operators are symmetric, so they are differentiable wrt the
 input field via the same (self-adjoint) operator. The ``*_diag``
 preconditioners have no differentiable input.
+
+Why ``*_forward`` / ``*_precond`` stay compositions here
+--------------------------------------------------------
+``fastfields-lib`` has fused kernels for ``(H + L) x`` and
+``(H + diag(L))^-1 g``, bound as ``fastfields.dlpack.{field,flow}_forward``
+and ``...precond``, and :mod:`fastfields.numpy` / :mod:`fastfields.cupy` call
+them directly -- one kernel instead of a temporary and two traversals.
+
+This backend deliberately does **not**. Here ``field_forward`` is
+``sym_matvec`` + ``field_matvec`` and ``field_precond`` is ``field_diag`` +
+``sym_solve``, and every one of those is an ``autograd.Function``: the
+composition is what makes these two differentiable wrt ``mat`` and ``vec``.
+Calling the raw fused binding instead would be faster and would silently
+drop the gradient -- the forward would still run, the graph would just end
+there. Trading autograd for a saved allocation is not a trade this wrapper
+should make on the caller's behalf.
+
+A fused *and* differentiable version is possible (a ``Function`` whose
+``forward`` calls ``field_forward`` and whose ``backward`` calls it again,
+the operator being self-adjoint), and is the right follow-up; it is a
+different change from exposing the op. Until then, reach for
+``fastfields.dlpack.field_forward`` directly if you want the fused kernel
+and have no use for gradients.
 """
 
 from __future__ import annotations
@@ -34,6 +57,10 @@ __all__ = [
     "field_subdiag",
     "field_subdiag_",
     "field_kernel",
+    "field_addkernel",
+    "field_addkernel_",
+    "field_subkernel",
+    "field_subkernel_",
     "field_relax",
     "field_matvec_rls",
     "field_diag_rls",
@@ -51,6 +78,10 @@ __all__ = [
     "flow_subdiag",
     "flow_subdiag_",
     "flow_kernel",
+    "flow_addkernel",
+    "flow_addkernel_",
+    "flow_subkernel",
+    "flow_subkernel_",
     "flow_relax",
     "flow_matvec_rls",
     "flow_diag_rls",
@@ -528,6 +559,78 @@ class _FieldDiagAcc(torch.autograd.Function):
         return gacc, None, None, None, None, None, None, None
 
 
+class _FieldKernelAcc(torch.autograd.Function):
+    """``acc (+/-)= K`` in place; differentiable wrt ``acc``.
+
+    ``K`` is the materialised Toeplitz stencil of the field regulariser: like
+    ``diag(L)`` it is a function of the penalty weights and the voxel size
+    only, with no tensor input, so the only gradient is the identity
+    pass-through wrt ``acc``. Same shape as :func:`field_kernel`'s output.
+    """
+
+    @staticmethod
+    def forward(
+        ctx, acc, voxel_size, absolute, membrane, bending, bound, ndim, sub
+    ):
+        fn = _fb.field_subkernel_ if sub else _fb.field_addkernel_
+        fn(
+            acc,
+            voxel_size=voxel_size,
+            absolute=absolute,
+            membrane=membrane,
+            bending=bending,
+            bound=bound,
+            ndim=ndim,
+            stream=stream_ptr(acc),
+        )
+        ctx.mark_dirty(acc)
+        return acc
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        gacc = grad_out if ctx.needs_input_grad[0] else None
+        return gacc, None, None, None, None, None, None, None
+
+
+class _FlowKernelAcc(torch.autograd.Function):
+    """``acc (+/-)= K`` in place (flow); differentiable wrt ``acc``."""
+
+    @staticmethod
+    def forward(
+        ctx,
+        acc,
+        voxel_size,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        bound,
+        ndim,
+        sub,
+    ):
+        fn = _fb.flow_subkernel_ if sub else _fb.flow_addkernel_
+        fn(
+            acc,
+            voxel_size=voxel_size,
+            absolute=absolute,
+            membrane=membrane,
+            bending=bending,
+            shears=shears,
+            div=div,
+            bound=bound,
+            ndim=ndim,
+            stream=stream_ptr(acc),
+        )
+        ctx.mark_dirty(acc)
+        return acc
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        gacc = grad_out if ctx.needs_input_grad[0] else None
+        return (gacc,) + (None,) * 9
+
+
 class _FlowDiagAcc(torch.autograd.Function):
     """``acc (+/-)= diag(L)`` in place (flow); differentiable wrt ``acc``."""
 
@@ -666,6 +769,55 @@ def _flow_diag_acc(
     check_dtype(inp)
     acc = inp if inplace else inp.clone()
     return _FlowDiagAcc.apply(
+        acc,
+        _voxel(voxel_size, ndim),
+        float(absolute),
+        float(membrane),
+        float(bending),
+        float(shears),
+        float(div),
+        as_bound(bound),
+        ndim,
+        sub,
+    )
+
+
+def _field_kernel_acc(
+    inp, absolute, membrane, bending, voxel_size, bound, ndim, sub, inplace
+):
+    """Single entry point behind the four field-kernel accumulate spellings."""
+    check_dtype(inp)
+    channels = inp.shape[-1]
+    acc = inp if inplace else inp.clone()
+    return _FieldKernelAcc.apply(
+        acc,
+        _voxel(voxel_size, ndim),
+        _per_channel(absolute, channels, "absolute"),
+        _per_channel(membrane, channels, "membrane"),
+        _per_channel(bending, channels, "bending"),
+        as_bound(bound),
+        ndim,
+        sub,
+    )
+
+
+def _flow_kernel_acc(
+    inp,
+    absolute,
+    membrane,
+    bending,
+    shears,
+    div,
+    voxel_size,
+    bound,
+    ndim,
+    sub,
+    inplace,
+):
+    """Single entry point behind the four flow-kernel accumulate spellings."""
+    check_dtype(inp)
+    acc = inp if inplace else inp.clone()
+    return _FlowKernelAcc.apply(
         acc,
         _voxel(voxel_size, ndim),
         float(absolute),
@@ -1860,4 +2012,167 @@ def field_subdiag_(
         ndim,
         sub=True,
         inplace=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stencil (kernel) accumulate variants
+# ---------------------------------------------------------------------------
+#
+# The same `inp +/- op(...)` pattern as the *_adddiag / *_subdiag family, for
+# the materialised Toeplitz stencil rather than the diagonal. `inp` is shaped
+# like :func:`field_kernel` / :func:`flow_kernel`'s output, and the stencil
+# depends on no tensor input, so these are differentiable wrt `inp` by
+# identity pass-through -- exactly like the diag forms.
+
+
+def field_addkernel(
+    inp: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """Return ``inp + K`` as a **new** tensor, shaped like ``inp``.
+
+    ``K`` is the field regulariser's stencil (see :func:`field_kernel`, whose
+    output shape ``inp`` must match). Differentiable wrt ``inp``.
+    """
+    return _field_kernel_acc(
+        inp, absolute, membrane, bending, voxel_size, bound, ndim,
+        sub=False, inplace=False,
+    )
+
+
+def field_subkernel(
+    inp: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """Return ``inp - K`` as a **new** tensor. Differentiable wrt ``inp``."""
+    return _field_kernel_acc(
+        inp, absolute, membrane, bending, voxel_size, bound, ndim,
+        sub=True, inplace=False,
+    )
+
+
+def field_addkernel_(
+    inp: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """In place: ``inp += K``. Mutates and returns ``inp``."""
+    return _field_kernel_acc(
+        inp, absolute, membrane, bending, voxel_size, bound, ndim,
+        sub=False, inplace=True,
+    )
+
+
+def field_subkernel_(
+    inp: Tensor,
+    absolute=None,
+    membrane=None,
+    bending=None,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """In place: ``inp -= K``. Mutates and returns ``inp``."""
+    return _field_kernel_acc(
+        inp, absolute, membrane, bending, voxel_size, bound, ndim,
+        sub=True, inplace=True,
+    )
+
+
+def flow_addkernel(
+    inp: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """Return ``inp + K`` as a **new** tensor, shaped like ``inp``.
+
+    ``K`` is the flow regulariser's stencil (see :func:`flow_kernel`, whose
+    output shape ``inp`` must match). Differentiable wrt ``inp``.
+    """
+    return _flow_kernel_acc(
+        inp, absolute, membrane, bending, shears, div, voxel_size, bound,
+        ndim, sub=False, inplace=False,
+    )
+
+
+def flow_subkernel(
+    inp: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """Return ``inp - K`` as a **new** tensor. Differentiable wrt ``inp``."""
+    return _flow_kernel_acc(
+        inp, absolute, membrane, bending, shears, div, voxel_size, bound,
+        ndim, sub=True, inplace=False,
+    )
+
+
+def flow_addkernel_(
+    inp: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """In place: ``inp += K``. Mutates and returns ``inp``."""
+    return _flow_kernel_acc(
+        inp, absolute, membrane, bending, shears, div, voxel_size, bound,
+        ndim, sub=False, inplace=True,
+    )
+
+
+def flow_subkernel_(
+    inp: Tensor,
+    absolute: float = 0.0,
+    membrane: float = 0.0,
+    bending: float = 0.0,
+    shears: float = 0.0,
+    div: float = 0.0,
+    *,
+    voxel_size=None,
+    bound: int | str = "dct2",
+    ndim: int = 1,
+) -> Tensor:
+    """In place: ``inp -= K``. Mutates and returns ``inp``."""
+    return _flow_kernel_acc(
+        inp, absolute, membrane, bending, shears, div, voxel_size, bound,
+        ndim, sub=True, inplace=True,
     )
