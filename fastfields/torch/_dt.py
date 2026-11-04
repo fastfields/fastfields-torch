@@ -358,6 +358,7 @@ def dt_mesh(
         )
     return _DtMesh.apply(loc, vertices, faces, signed, naive, return_nearest)
 
+
 # --------------------------------------------------------------------------- #
 # Point-to-spline distance                                                    #
 # --------------------------------------------------------------------------- #
@@ -393,8 +394,10 @@ def _spline_operands(loc: Tensor, coeff: Tensor, *rest: Tensor):
     shapes = [loc.shape[:-1], coeff.shape[:-2]]
     shapes += [t.shape[:-1] for t in rest]
     batch = torch.broadcast_shapes(*shapes)
-    out = [loc.expand(*batch, loc.shape[-1]),
-           coeff.expand(*batch, *coeff.shape[-2:])]
+    out = [
+        loc.expand(*batch, loc.shape[-1]),
+        coeff.expand(*batch, *coeff.shape[-2:]),
+    ]
     out += [t.expand(*batch, t.shape[-1]) for t in rest]
     return batch, out
 
@@ -426,18 +429,39 @@ class _DtSpline(torch.autograd.Function):
         spline, bound, max_iter, tol, step = params
         if kind == "dt_spline_table":
             _fb.dt_spline_table(
-                time, dist, loc, coeff, times,
-                spline=spline, bound=bound, stream=stream_ptr(dist),
+                time,
+                dist,
+                loc,
+                coeff,
+                times,
+                spline=spline,
+                bound=bound,
+                stream=stream_ptr(dist),
             )
         elif kind == "dt_spline_brent":
             _fb.dt_spline_brent(
-                time, dist, loc, coeff, max_iter, tol, step,
-                spline=spline, bound=bound, stream=stream_ptr(dist),
+                time,
+                dist,
+                loc,
+                coeff,
+                max_iter,
+                tol,
+                step,
+                spline=spline,
+                bound=bound,
+                stream=stream_ptr(dist),
             )
         else:
             _fb.dt_spline_gaussnewton(
-                time, dist, loc, coeff, max_iter, tol,
-                spline=spline, bound=bound, stream=stream_ptr(dist),
+                time,
+                dist,
+                loc,
+                coeff,
+                max_iter,
+                tol,
+                spline=spline,
+                bound=bound,
+                stream=stream_ptr(dist),
             )
         ctx.kind = kind
         return dist, time

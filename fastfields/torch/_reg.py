@@ -2042,8 +2042,15 @@ def field_addkernel(
     output shape ``inp`` must match). Differentiable wrt ``inp``.
     """
     return _field_kernel_acc(
-        inp, absolute, membrane, bending, voxel_size, bound, ndim,
-        sub=False, inplace=False,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        voxel_size,
+        bound,
+        ndim,
+        sub=False,
+        inplace=False,
     )
 
 
@@ -2059,8 +2066,15 @@ def field_subkernel(
 ) -> Tensor:
     """Return ``inp - K`` as a **new** tensor. Differentiable wrt ``inp``."""
     return _field_kernel_acc(
-        inp, absolute, membrane, bending, voxel_size, bound, ndim,
-        sub=True, inplace=False,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        voxel_size,
+        bound,
+        ndim,
+        sub=True,
+        inplace=False,
     )
 
 
@@ -2076,8 +2090,15 @@ def field_addkernel_(
 ) -> Tensor:
     """In place: ``inp += K``. Mutates and returns ``inp``."""
     return _field_kernel_acc(
-        inp, absolute, membrane, bending, voxel_size, bound, ndim,
-        sub=False, inplace=True,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        voxel_size,
+        bound,
+        ndim,
+        sub=False,
+        inplace=True,
     )
 
 
@@ -2093,8 +2114,15 @@ def field_subkernel_(
 ) -> Tensor:
     """In place: ``inp -= K``. Mutates and returns ``inp``."""
     return _field_kernel_acc(
-        inp, absolute, membrane, bending, voxel_size, bound, ndim,
-        sub=True, inplace=True,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        voxel_size,
+        bound,
+        ndim,
+        sub=True,
+        inplace=True,
     )
 
 
@@ -2116,8 +2144,17 @@ def flow_addkernel(
     output shape ``inp`` must match). Differentiable wrt ``inp``.
     """
     return _flow_kernel_acc(
-        inp, absolute, membrane, bending, shears, div, voxel_size, bound,
-        ndim, sub=False, inplace=False,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size,
+        bound,
+        ndim,
+        sub=False,
+        inplace=False,
     )
 
 
@@ -2135,8 +2172,17 @@ def flow_subkernel(
 ) -> Tensor:
     """Return ``inp - K`` as a **new** tensor. Differentiable wrt ``inp``."""
     return _flow_kernel_acc(
-        inp, absolute, membrane, bending, shears, div, voxel_size, bound,
-        ndim, sub=True, inplace=False,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size,
+        bound,
+        ndim,
+        sub=True,
+        inplace=False,
     )
 
 
@@ -2154,8 +2200,17 @@ def flow_addkernel_(
 ) -> Tensor:
     """In place: ``inp += K``. Mutates and returns ``inp``."""
     return _flow_kernel_acc(
-        inp, absolute, membrane, bending, shears, div, voxel_size, bound,
-        ndim, sub=False, inplace=True,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size,
+        bound,
+        ndim,
+        sub=False,
+        inplace=True,
     )
 
 
@@ -2173,6 +2228,15 @@ def flow_subkernel_(
 ) -> Tensor:
     """In place: ``inp -= K``. Mutates and returns ``inp``."""
     return _flow_kernel_acc(
-        inp, absolute, membrane, bending, shears, div, voxel_size, bound,
-        ndim, sub=True, inplace=True,
+        inp,
+        absolute,
+        membrane,
+        bending,
+        shears,
+        div,
+        voxel_size,
+        bound,
+        ndim,
+        sub=True,
+        inplace=True,
     )

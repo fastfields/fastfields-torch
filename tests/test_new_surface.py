@@ -45,16 +45,19 @@ def _spline_inputs(nbatch=4, npoints=6, d=2, dtype=torch.float64):
 
 def test_dt_spline_table_matches_the_raw_binding():
     loc, coeff = _spline_inputs()
-    times = torch.linspace(0, 5, 11, dtype=loc.dtype).expand(
-        loc.shape[0], 11
-    ).contiguous()
+    times = (
+        torch.linspace(0, 5, 11, dtype=loc.dtype)
+        .expand(loc.shape[0], 11)
+        .contiguous()
+    )
 
     dist, time = fft.dt_spline_table(loc, coeff, times)
 
     ref_time = torch.empty(loc.shape[:-1], dtype=loc.dtype)
     ref_dist = torch.empty(loc.shape[:-1], dtype=loc.dtype)
-    _fb.dt_spline_table(ref_time, ref_dist, loc, coeff, times, spline=3,
-                        bound=3)
+    _fb.dt_spline_table(
+        ref_time, ref_dist, loc, coeff, times, spline=3, bound=3
+    )
     torch.testing.assert_close(dist, ref_dist)
     torch.testing.assert_close(time, ref_time)
 
@@ -78,9 +81,11 @@ def test_dt_spline_is_not_differentiable_but_forward_runs(fn):
     loc, coeff = _spline_inputs()
     loc = loc.requires_grad_(True)
     if fn == "dt_spline_table":
-        times = torch.linspace(0, 5, 11, dtype=loc.dtype).expand(
-            loc.shape[0], 11
-        ).contiguous()
+        times = (
+            torch.linspace(0, 5, 11, dtype=loc.dtype)
+            .expand(loc.shape[0], 11)
+            .contiguous()
+        )
         dist, _ = fft.dt_spline_table(loc, coeff, times)
     else:
         dist, _ = getattr(fft, fn)(loc, coeff)
@@ -137,7 +142,11 @@ def test_count_gradient_matches_the_raw_adjoint():
 
     ref = torch.zeros_like(grid)
     _fb.count_backward(
-        ref, seed.contiguous(), grid.detach(), spline=2, bound=3,
+        ref,
+        seed.contiguous(),
+        grid.detach(),
+        spline=2,
+        bound=3,
         extrapolate=1,
     )
     torch.testing.assert_close(grid.grad, ref)
@@ -321,10 +330,18 @@ def test_matvec_accumulate_broadcasts_mat_to_the_accumulator():
 
 NDIM = 2
 VS = [1.0, 1.2]
-FIELD_PEN = {"absolute": [0.1, 0.2], "membrane": [0.5, 0.3],
-             "bending": [0.05, 0.02]}
-FLOW_PEN = {"absolute": 0.1, "membrane": 0.5, "bending": 0.0,
-            "shears": 0.2, "div": 0.1}
+FIELD_PEN = {
+    "absolute": [0.1, 0.2],
+    "membrane": [0.5, 0.3],
+    "bending": [0.05, 0.02],
+}
+FLOW_PEN = {
+    "absolute": 0.1,
+    "membrane": 0.5,
+    "bending": 0.0,
+    "shears": 0.2,
+    "div": 0.1,
+}
 KW = {"voxel_size": VS, "bound": "dct2", "ndim": NDIM}
 
 
@@ -336,24 +353,27 @@ def _kernel(family):
     return fft.flow_kernel(NDIM, **FLOW_PEN, voxel_size=VS, bound="dct2")
 
 
-@pytest.mark.parametrize("family,pen", [("field", FIELD_PEN),
-                                        ("flow", FLOW_PEN)])
+@pytest.mark.parametrize(
+    "family,pen", [("field", FIELD_PEN), ("flow", FLOW_PEN)]
+)
 def test_addkernel_on_zeros_is_the_kernel(family, pen):
     k = _kernel(family)
     got = getattr(fft, f"{family}_addkernel")(torch.zeros_like(k), **pen, **KW)
     torch.testing.assert_close(got, k)
 
 
-@pytest.mark.parametrize("family,pen", [("field", FIELD_PEN),
-                                        ("flow", FLOW_PEN)])
+@pytest.mark.parametrize(
+    "family,pen", [("field", FIELD_PEN), ("flow", FLOW_PEN)]
+)
 def test_subkernel_on_zeros_is_minus_the_kernel(family, pen):
     k = _kernel(family)
     got = getattr(fft, f"{family}_subkernel")(torch.zeros_like(k), **pen, **KW)
     torch.testing.assert_close(got, -k)
 
 
-@pytest.mark.parametrize("family,pen", [("field", FIELD_PEN),
-                                        ("flow", FLOW_PEN)])
+@pytest.mark.parametrize(
+    "family,pen", [("field", FIELD_PEN), ("flow", FLOW_PEN)]
+)
 @pytest.mark.parametrize("sign", ["add", "sub"])
 def test_inplace_kernel_mutates_and_matches_functional(family, pen, sign):
     start = _kernel(family) * 0.25
@@ -364,8 +384,9 @@ def test_inplace_kernel_mutates_and_matches_functional(family, pen, sign):
     torch.testing.assert_close(buf, expected)
 
 
-@pytest.mark.parametrize("family,pen", [("field", FIELD_PEN),
-                                        ("flow", FLOW_PEN)])
+@pytest.mark.parametrize(
+    "family,pen", [("field", FIELD_PEN), ("flow", FLOW_PEN)]
+)
 def test_functional_kernel_accumulate_leaves_input_alone(family, pen):
     start = _kernel(family) * 0.25
     before = start.clone()
@@ -373,8 +394,9 @@ def test_functional_kernel_accumulate_leaves_input_alone(family, pen):
     torch.testing.assert_close(start, before)
 
 
-@pytest.mark.parametrize("family,pen", [("field", FIELD_PEN),
-                                        ("flow", FLOW_PEN)])
+@pytest.mark.parametrize(
+    "family,pen", [("field", FIELD_PEN), ("flow", FLOW_PEN)]
+)
 def test_kernel_accumulate_is_differentiable_wrt_its_input(family, pen):
     """The stencil has no tensor input, so the gradient is pass-through."""
     k = (_kernel(family) * 0.25).requires_grad_(True)
