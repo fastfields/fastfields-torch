@@ -53,6 +53,8 @@ from ._util import (
 
 __all__ = [
     "sym_matvec",
+    "sym_addmatvec_",
+    "sym_submatvec_",
     "sym_solve",
     "sym_solve_",
     "sym_invert",
@@ -139,6 +141,63 @@ def sym_matvec(mat: Tensor, vec: Tensor) -> Tensor:
     mat = mat.expand(*batch, mat.shape[-1])
     vec = vec.expand(*batch, vec.shape[-1])
     return _MatVec.apply(mat, vec)
+
+
+def _matvec_acc(out0: Tensor, mat: Tensor, vec: Tensor, sub: bool) -> Tensor:
+    """Shared body of :func:`sym_addmatvec_` / :func:`sym_submatvec_`."""
+    name = "sym_submatvec_" if sub else "sym_addmatvec_"
+    check_dtype(out0, mat, vec)
+    _check_sym(mat, vec)
+    if out0.shape[-1] != vec.shape[-1]:
+        raise ValueError(
+            f"{name}: out0 has {out0.shape[-1]} channels but vec has "
+            f"{vec.shape[-1]}"
+        )
+    check_inplace_leaf(name, out0)
+    # out0 fixes the batch shape (it is the caller's buffer); mat and vec are
+    # broadcast to it with 0-stride views the stride-aware binding reads
+    # directly.
+    batch = out0.shape[:-1]
+    mat = mat.expand(*batch, mat.shape[-1])
+    vec = vec.expand(*batch, vec.shape[-1])
+    return _MatVecAcc.apply(out0, mat, vec, sub)
+
+
+def sym_addmatvec_(out0: Tensor, mat: Tensor, vec: Tensor) -> Tensor:
+    """Accumulate ``out0 += mat @ vec`` **in place**; returns ``out0``.
+
+    Argument order matches ``fastfields.numpy`` / ``fastfields.cupy``
+    exactly -- accumulator first -- which is *not* the order of the
+    out-of-place :func:`sym_matvec`.
+
+    Differentiable wrt ``out0`` (identity pass-through). A ``.backward()``
+    that needs a gradient wrt ``mat`` or ``vec`` raises ``RuntimeError``
+    naming the differentiable alternative, ``out0 + sym_matvec(mat, vec)``;
+    see :class:`_MatVecAcc` for why.
+
+    Parameters
+    ----------
+    out0 : `(*B, C) tensor`
+        Accumulator, mutated in place. Fixes the batch shape.
+    mat : `(*B, C*(C+1)//2) tensor`
+        Compact-symmetric matrix, broadcast to ``out0``'s batch shape.
+    vec : `(*B, C) tensor`
+        Vector, broadcast to ``out0``'s batch shape.
+
+    Returns
+    -------
+    out0 : `(*B, C) tensor`
+        The same tensor object, now holding ``out0 + mat @ vec``.
+    """
+    return _matvec_acc(out0, mat, vec, sub=False)
+
+
+def sym_submatvec_(out0: Tensor, mat: Tensor, vec: Tensor) -> Tensor:
+    """Accumulate ``out0 -= mat @ vec`` **in place**; returns ``out0``.
+
+    The subtracting twin of :func:`sym_addmatvec_`; same contract.
+    """
+    return _matvec_acc(out0, mat, vec, sub=True)
 
 
 def sym_solve(
@@ -330,6 +389,51 @@ class _MatVec(torch.autograd.Function):
             gmat = grad.new_empty(mat.shape)
             _fb.sym_matvec_backward(gmat, grad, vec, stream=stream_ptr(gmat))
         return gmat, gvec
+
+
+class _MatVecAcc(torch.autograd.Function):
+    """``out0 (+/-)= mat @ vec`` in place; differentiable wrt ``out0`` only.
+
+    The gradient wrt the accumulator is the identity pass-through, so the
+    useful case -- accumulating into a tensor that is itself part of a graph
+    -- works. Gradients wrt ``mat``/``vec`` are *not* implemented here even
+    though :class:`_MatVec` has them: an in-place accumulate consumes
+    ``out0``'s storage, and plumbing the matvec adjoints through a
+    ``mark_dirty`` node correctly (so that ``out0``'s own history and the
+    matvec's contribution are both honoured) is a separate piece of work
+    from exposing the op. Until it is done, calling ``.backward()`` with
+    ``mat`` or ``vec`` requiring grad raises rather than silently returning a
+    wrong (zero) gradient -- which is why this does not simply return
+    ``None`` for them.
+
+    Not a mathematical obstruction: for ``y = out0 +/- M v`` the gradients are
+    ``dL/dout0 = g``, ``dL/dv = +/- M g`` (M self-adjoint) and ``dL/dM`` the
+    usual outer product, i.e. exactly what :class:`_MatVec` already computes.
+    The out-of-place spelling is ``out0 +/- sym_matvec(mat, vec)``, which is
+    fully differentiable today.
+    """
+
+    @staticmethod
+    def forward(ctx, out0, mat, vec, sub):
+        fn = _fb.sym_submatvec_ if sub else _fb.sym_addmatvec_
+        fn(out0, mat, vec, stream=stream_ptr(out0))
+        ctx.needs_matvec_grad = (
+            ctx.needs_input_grad[1] or ctx.needs_input_grad[2]
+        )
+        ctx.mark_dirty(out0)
+        return out0
+
+    @staticmethod
+    def backward(ctx, grad):
+        if ctx.needs_matvec_grad:
+            raise_not_differentiable(
+                "sym_addmatvec_/sym_submatvec_",
+                "the in-place accumulate has no gradient wrt `mat`/`vec` on "
+                "this backend; use `out0 + sym_matvec(mat, vec)`, which is "
+                "differentiable wrt all three.",
+            )
+        gout = grad if ctx.needs_input_grad[0] else None
+        return gout, None, None, None
 
 
 class _Solve(torch.autograd.Function):
